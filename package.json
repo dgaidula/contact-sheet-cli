@@ -1,13 +1,13 @@
 {
-  "name": "proof-sheet",
-  "version": "1.1.0",
+  "name": "contact-sheet-cli",
+  "version": "1.2.0",
   "description": "Generate a self-contained HTML contact sheet for reviewing an image-processing batch: columns of folders, rows matched by filename, so you can eyeball original vs processed side by side.",
   "type": "module",
   "bin": {
-    "proof-sheet": "./proof-sheet.mjs"
+    "contact-sheet-cli": "./contact-sheet-cli.mjs"
   },
   "files": [
-    "proof-sheet.mjs",
+    "contact-sheet-cli.mjs",
     "README.md"
   ],
   "engines": {
@@ -30,10 +30,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dgaidula/proof-sheet.git"
+    "url": "git+https://github.com/dgaidula/contact-sheet-cli.git"
   },
-  "homepage": "https://github.com/dgaidula/proof-sheet#readme",
+  "homepage": "https://github.com/dgaidula/contact-sheet-cli#readme",
   "bugs": {
-    "url": "https://github.com/dgaidula/proof-sheet/issues"
+    "url": "https://github.com/dgaidula/contact-sheet-cli/issues"
   }
 }

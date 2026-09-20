@@ -1,8 +1,8 @@
-# proof-sheet — agent guide
+# contact-sheet-cli — agent guide
 
 Zero-dependency Node 20+ CLI: turns N directories into one self-contained
 HTML contact sheet (columns = directories, rows = filename stems) for
-eyeballing an image-processing batch. One file: `proof-sheet.mjs`.
+eyeballing an image-processing batch. One file: `contact-sheet-cli.mjs`.
 
 ## How matching works (read this before touching `buildRows`)
 
@@ -11,7 +11,7 @@ The core rule: stem `S` is a *variant* of stem `T` iff `S === T` or `S`
 starts with `T + "-"`. A stem with no shorter root anywhere in the batch
 becomes its own row.
 
-Implementation in `buildRows` (`proof-sheet.mjs`):
+Implementation in `buildRows` (`contact-sheet-cli.mjs`):
 1. Collect every stem (lowercased) seen across all columns into one set.
 2. `findParent(stem)` finds the *longest* other stem in that set that `stem`
    is a hyphen-suffixed variant of (longest wins so `name-gemini-bg` attaches
@@ -59,7 +59,7 @@ means:
 
 ## Extension ideas and where they'd slot in
 
-- **Status/notes sidecar JSON** — e.g. `proof-sheet.json` next to each source
+- **Status/notes sidecar JSON** — e.g. `contact-sheet.json` next to each source
   dir with `{ "filename.png": "flagged, redo background" }`. Would slot into
   `scanDir` (read the sidecar once per column) and `renderItem` (append a
   `.note` div). Keep it optional/absent-safe: no sidecar, no behavior change.
@@ -90,7 +90,7 @@ means:
   link, missing-cell placeholders, exit codes, and the `--help` header-only
   print.
 
-`proof-sheet.mjs` only runs `main()` when invoked as the entry point
+`contact-sheet-cli.mjs` only runs `main()` when invoked as the entry point
 (`import.meta.url === pathToFileURL(process.argv[1]).href` guard at the
 bottom) — this is required for the unit-test imports to not immediately
 execute the CLI and blow up on missing argv. Don't remove that guard.
@@ -101,7 +101,5 @@ cheaper to reason about than a CLI/HTML assertion.
 
 ## Release steps
 
-Owner (Dan) publishes to npm himself — do not run `npm publish`. Do not push
-or create the GitHub repo either; that's also on him. If asked to prep a
-release: bump `version` in `package.json`, make sure `npm test` is green,
-and stop there.
+Bump `version` in `package.json`, make sure `npm test` is green, then
+`npm publish`.

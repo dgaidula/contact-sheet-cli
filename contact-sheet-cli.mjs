@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// proof-sheet: build a self-contained HTML contact sheet for reviewing an
+// contact-sheet-cli: build a self-contained HTML contact sheet for reviewing an
 // image-processing batch, columns of folders, rows matched by filename.
 //
 // Point it at two or more directories from the same batch run (originals,
@@ -29,14 +29,23 @@
 // external assets.
 //
 // Usage:
-//   proof-sheet original/ processed/ final/
-//   proof-sheet --out review/sheet.html original/ processed/
-//   proof-sheet --title "Batch 12" --sort mtime orig/ "Final=out/pass3/"
-//   proof-sheet "Before=in/" "After=out/"     # Label=dir renames a column
+//   contact-sheet-cli original/ processed/ final/
+//   contact-sheet-cli --out review/sheet.html original/ processed/
+//   contact-sheet-cli --title "Batch 12" --sort mtime orig/ "Final=out/pass3/"
+//   contact-sheet-cli "Before=in/" "After=out/"     # Label=dir renames a column
+//   contact-sheet-cli --link "../pages/{stem}/index.html" 1440/ 390/
+//                                                 # row labels link to a page per stem
+//
+// --link <template>: make each row label an <a> to a URL built from the
+// template, with {stem} replaced by the row's stem (URL-encoded). Relative
+// templates resolve from the sheet's own location, like image paths do.
+// Use it when every row has a real artefact behind the thumbnails — a built
+// page, a PDF, a source file — so a reviewer can open it from the sheet.
 
 import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -194,7 +203,7 @@ function renderCell(matches, outPath) {
   return `<td class="cell">${matches.map((m) => renderItem(m, outPath)).join('')}</td>`;
 }
 
-function renderHtml({ title, columns, rows, outPath, generatedAt }) {
+export function renderHtml({ title, columns, rows, outPath, generatedAt, link }) {
   const filesPerColumn = columns.map((_, i) => rows.reduce((n, r) => n + r.cells[i].length, 0));
   const missingCount = rows.reduce(
     (n, r) => n + r.cells.filter((c) => c.length === 0).length,
@@ -205,7 +214,7 @@ function renderHtml({ title, columns, rows, outPath, generatedAt }) {
   const bodyRows = rows
     .map(
       (row) =>
-        `<tr><th class="rowhead">${escapeHtml(row.label)}</th>` +
+        `<tr><th class="rowhead">${link ? `<a href="${escapeHtml(link.replace(/\{stem\}/g, encodeURIComponent(row.label)))}">${escapeHtml(row.label)}</a>` : escapeHtml(row.label)}</th>` +
         row.cells.map((cell) => renderCell(cell, outPath)).join('') +
         `</tr>`,
     )
@@ -385,9 +394,10 @@ async function main() {
   const { values, positionals } = parseArgs({
     options: {
       exclude: { type: 'string', multiple: true },
-      out: { type: 'string', default: 'proof-sheet.html' },
+      out: { type: 'string', default: 'contact-sheet.html' },
       title: { type: 'string' },
       sort: { type: 'string', default: 'name' },
+      link: { type: 'string' },
       help: { type: 'boolean', default: false },
     },
     allowPositionals: true,
@@ -438,7 +448,11 @@ async function main() {
   const title = values.title ?? `Proof Sheet: ${columns.map((c) => c.label).join(' / ')}`;
   const generatedAt = new Date().toISOString();
 
-  const html = renderHtml({ title, columns, rows, outPath: values.out, generatedAt });
+  if (values.link !== undefined && !values.link.includes('{stem}')) {
+    console.error('--link template must contain {stem}');
+    process.exit(2);
+  }
+  const html = renderHtml({ title, columns, rows, outPath: values.out, generatedAt, link: values.link });
   mkdirSync(path.dirname(path.resolve(values.out)), { recursive: true });
   writeFileSync(values.out, html);
 
@@ -447,4 +461,9 @@ async function main() {
   console.log(`wrote ${values.out}`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+// Entry-point guard. Resolve symlinks first: an npm-linked bin is a symlink in
+// /usr/local/bin, so argv[1] is the link path while import.meta.url is the real
+// path, and a plain comparison silently skips main() (exit 0, no output —
+// found by a claude-ops battery arm 2026-09-06).
+const __entry = process.argv[1] ? (() => { try { return realpathSync(process.argv[1]); } catch { return process.argv[1]; } })() : null;
+if (__entry && import.meta.url === pathToFileURL(__entry).href) await main();

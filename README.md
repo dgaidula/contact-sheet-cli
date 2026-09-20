@@ -1,4 +1,4 @@
-# proof-sheet
+# contact-sheet-cli
 
 Build a single self-contained HTML contact sheet for reviewing an
 image-processing batch: each directory you pass becomes a column, each
@@ -13,11 +13,11 @@ filename so a bad frame or a bungled conversion jumps out immediately.
 
 ```sh
 # run without installing
-npx proof-sheet original/ processed/
+npx contact-sheet-cli original/ processed/
 
 # or install globally
-npm install -g proof-sheet
-proof-sheet original/ processed/
+npm install -g contact-sheet-cli
+contact-sheet-cli original/ processed/
 ```
 
 Requires Node 20+. Zero dependencies — the whole tool is one `.mjs` file.
@@ -25,17 +25,17 @@ Requires Node 20+. Zero dependencies — the whole tool is one `.mjs` file.
 ## Quick start
 
 ```sh
-proof-sheet original/ redrawn/ vectorized/
+contact-sheet-cli original/ redrawn/ vectorized/
 ```
 
-Writes `proof-sheet.html` in the current directory (override with `--out`) —
+Writes `contact-sheet.html` in the current directory (override with `--out`) —
 open it in any browser, no server needed. Each row is a filename (matched by
 stem, case-insensitively); each column is one of the directories you passed,
 in the order given.
 
 ```sh
 # a typical 3-column review: source photos, an AI touch-up pass, the final export
-proof-sheet "Original=photos/" "Touched up=out/gemini/" "Final=out/vector/"
+contact-sheet-cli "Original=photos/" "Touched up=out/gemini/" "Final=out/vector/"
 ```
 
 `Label=dir` renames a column's header; a bare directory just uses its
@@ -62,7 +62,7 @@ silently collapsing the grid.
 
 | flag | default | meaning |
 |---|---|---|
-| `--out <file>` | `proof-sheet.html` | output HTML path (parent dirs are created as needed) |
+| `--out <file>` | `contact-sheet.html` | output HTML path (parent dirs are created as needed) |
 | `--title "<text>"` | auto (column labels) | page `<h1>` / `<title>` |
 | `--sort name\|mtime` | `name` | row order: alphabetical, or by each row's earliest matched file's mtime |
 | `--help` | | print usage |
