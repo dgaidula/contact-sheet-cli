@@ -4,7 +4,7 @@
   "description": "Generate a self-contained HTML contact sheet for reviewing an image-processing batch: columns of folders, rows matched by filename, so you can eyeball original vs processed side by side.",
   "type": "module",
   "bin": {
-    "contact-sheet-cli": "./contact-sheet-cli.mjs"
+    "contact-sheet-cli": "contact-sheet-cli.mjs"
   },
   "files": [
     "contact-sheet-cli.mjs",
