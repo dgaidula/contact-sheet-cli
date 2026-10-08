@@ -94,10 +94,18 @@ nothing else in the grid path changed, and its output is byte-identical to
 
 Shape, top to bottom in the file:
 1. **Readers** turn an input into items: `itemsFromManifest`,
-   `itemsFromList`, `itemsFromDir`. Pure apart from `scanDir`.
-2. **`planPages(items, { perPage })`** is the core, and the place to change
-   any rule: order (by `seq` only when *every* item has one, so a partly
-   numbered manifest can’t produce two 009s), sections (first appearance),
+   `itemsFromList`, `itemsFromDir`. Pure apart from `scanDir`. Video rows
+   (CONTRACT.md) never become tiles from their `paths`: a `kind: "range"` row
+   is skipped and counted; a `kind: "frame"` row shows its `group.copy` still
+   (resolved from the manifest’s folder) or is skipped and counted.
+2. **`planPages(items, { perPage, sort, keepers })`** is the core, and the place to change
+   any rule: order (`--sort date` by each item’s `sortDate` — `date.iso`, else a
+   dated label — undated last in input order; otherwise by `seq` only when
+   *every* item has one, so a partly numbered manifest can’t produce two 009s;
+   otherwise input order — manifests are unordered sets per CONTRACT.md, so
+   ordering is this viewer’s job), the `--keepers` filter (rows with
+   `group.keeper === true` plus rows with no `group` block; the rest are
+   counted in `dropped`), sections (first appearance),
    numbers (one running count across the whole sheet, so a number names one
    photo), pages (each section starts a new page; a page knows `from/to/total`
    in its section and `number/of` in the sheet).
