@@ -107,7 +107,12 @@ accepted image files turn up across every directory given.
 contact-sheet-cli pages picks.jsonl --title "Slideshow, round 2"
 contact-sheet-cli pages picks.jsonl --pdf round2.pdf --thumbs thumbs/
 contact-sheet-cli pages scans/ --tiles 5x4 --page "a4 portrait"
+contact-sheet-cli pages keepers/manifest.jsonl --sort date --keepers
 ```
+
+Until 1.3.0 is published, the installed `contact-sheet-cli` has no `pages`
+mode: run `npm link` in this checkout, or call it as
+`node contact-sheet-cli.mjs pages …`.
 
 The grid above compares the stages of one batch. `pages` is for a different
 job: a review round over an ordered selection — the picks first, then each
@@ -130,15 +135,26 @@ file’s own folder.
 
 | tile shows | read from |
 |---|---|
-| the image | `paths[0]`, else `path` |
-| its number | `seq`, when every row has one; otherwise its place in the sheet |
+| the image | `paths[0]`, else `path`; for a video frame row, its still (`group.copy`) |
+| its number | `seq`, when every row has one and `--sort date` isn’t given; otherwise its place in the sheet |
 | its date | `dateLabel`, else `date.label`, else the day of `date.iso` |
 | “≈” after the date | `date.estimated` is `true`, or `dateSrc` starts with `file`, `estimated`, `undated` or `archival` |
 | its section | the field `--sections` names (default `category`); dotted for a nested one, like `group.groupId` |
 
-Rows are ordered by `seq` when every row has one, otherwise kept in manifest
-order; sections appear in the order of their first row. A row with no image
-path (a video range, say) is skipped and counted.
+Rows are kept in manifest order, or ordered by `seq` when every row has one.
+`--sort date` orders them by date instead, and wins over `seq`: by
+`date.iso`, else by `dateLabel` or `date.label` when it is a date (a year
+alone sorts at July 1, a month alone at the 15th); undated rows go last, in
+manifest order, and equal dates keep their manifest order. `--keepers` shows
+only the rows whose `group.keeper` is `true`, plus rows with no `group` at
+all, and counts the rest on stderr. Sections appear in the order of their
+first row.
+
+Video rows hold the video in `paths`, and a video is never drawn as a tile.
+A frame row shows the still extracted from it, `group.copy` (near-dupe-pick
+`video-stills`), resolved from the manifest’s folder; without one it is
+skipped. A range row is always skipped. Skipped rows, like any row with no
+image path, are counted on stderr, with the video ones named.
 
 **A list file:** one path per line, optionally followed by a tab and a label,
 then a tab and a section. Blank lines and `#` comments are skipped.
@@ -169,6 +185,8 @@ neither.
 | `--page "<size>"` | `letter landscape` | `letter`, `legal`, `tabloid`, `a4` or `a3`, then `portrait` or `landscape` |
 | `--title "<text>"` | the input’s name | sheet title, over every page |
 | `--sections <key>` | `category` | the manifest field that names each row’s section |
+| `--sort date` | | order by date, undated last (see above); wins over `seq` |
+| `--keepers` | | only `group.keeper` rows, and rows with no `group` |
 | `--thumbs <dir>` | | make downscaled copies there and show those |
 
 ### The PDF
@@ -222,4 +240,4 @@ npm test      # node --test — builds tiny fixture PNGs on the fly, no install 
 
 ## License
 
-MIT
+MIT © Danniel T. Gaidula

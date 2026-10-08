@@ -55,11 +55,15 @@
 // column directory that is really called pages is passed as ./pages.
 //
 //   manifest  JSONL, one row per image (the photo tools' shared manifest).
-//             Image: paths[0], or path. Number: seq, else its position.
+//             Image: paths[0], or path. Video rows hold a video, never
+//             shown: a frame row shows its still (group.copy, from the
+//             manifest's folder) or is skipped; a range row is skipped.
+//             Number: seq, else its position.
 //             Date: dateLabel, or date.label. A date is marked "≈" when
 //             date.estimated is true, or when dateSrc starts with file,
 //             estimated, undated or archival. Section: the --sections field.
-//             Order: by seq when every row has one, else manifest order.
+//             Order: --sort date, else by seq when every row has one,
+//             else manifest order.
 //   list      One path per line, with optional tab-separated label and
 //             section columns. Blank lines and # comments are skipped.
 //   dir       Its images (flat, not recursed), in natural filename order.
@@ -72,6 +76,11 @@
 //   --title "<text>"  sheet title (default: the input's name)
 //   --sections <key>  manifest field naming each row's section; dotted for a
 //                     nested one, like group.groupId (default category)
+//   --sort date       order by date.iso (else a dated dateLabel/date.label),
+//                     undated rows last; numbers then run in that order,
+//                     even when every row has a seq
+//   --keepers         only rows whose group.keeper is true, and rows with
+//                     no group block
 //   --thumbs <dir>    write downscaled JPEG copies there (sips, else magick)
 //                     and show those; source images are never modified
 //
@@ -517,14 +526,33 @@ function makeItem(full, fields = {}) {
     estimated: fields.estimated ?? false,
     label: fields.label ?? null,
     section: fields.section ?? null,
+    sortDate: fields.sortDate ?? null,
+    keeper: fields.keeper ?? null,
   };
 }
 
-// Manifest JSONL -> { items, skipped }. A row with no image path (a video
-// range row, say) is counted in `skipped`, not drawn.
+// A date as a sortable key: "YYYY[-MM[-DD[THH:MM[:SS]]]]" from the start of
+// an ISO string or a label; null for "undated" or anything else. A year-only
+// label sorts at July 1 and a month-only one at mid-month, as photo-date-fix
+// places such hints, so neither leads its era.
+export function dateKey(value) {
+  if (typeof value !== 'string') return null;
+  const m = /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?))?)?)?(?![\d])/.exec(value.trim());
+  if (!m) return null;
+  const [, y, mo, d, time] = m;
+  return `${y}-${mo ?? '07'}-${d ?? (mo ? '15' : '01')}${time ? `T${time}` : ''}`;
+}
+
+// Manifest JSONL -> { items, skipped, ranges, frames }. A row with no image
+// path is counted in `skipped`, not drawn. Video rows carry the video in
+// `paths`, never an image: a range row is skipped (and counted in `ranges`
+// too); a frame row shows its extracted still, `group.copy` (relative to the
+// manifest's folder), or without one is skipped (and counted in `frames`).
 export function itemsFromManifest(text, { baseDir = '.', sectionKey = 'category' } = {}) {
   const items = [];
   let skipped = 0;
+  let ranges = 0;
+  let frames = 0;
   text.split('\n').forEach((line, i) => {
     if (!line.trim()) return;
     let row;
@@ -536,10 +564,15 @@ export function itemsFromManifest(text, { baseDir = '.', sectionKey = 'category'
     if (row === null || typeof row !== 'object' || Array.isArray(row)) {
       throw exitError(2, `manifest line ${i + 1} is not a JSON object`);
     }
-    const file = Array.isArray(row.paths) && typeof row.paths[0] === 'string' ? row.paths[0]
+    const group = row.group && typeof row.group === 'object' ? row.group : null;
+    const file = row.kind === 'range' ? null
+      : row.kind === 'frame' ? (typeof group?.copy === 'string' && group.copy !== '' ? group.copy : null)
+      : Array.isArray(row.paths) && typeof row.paths[0] === 'string' ? row.paths[0]
       : typeof row.path === 'string' ? row.path : null;
     if (!file) {
       skipped++;
+      if (row.kind === 'range') ranges++;
+      if (row.kind === 'frame') frames++;
       return;
     }
     const block = row.date && typeof row.date === 'object' ? row.date : null;
@@ -550,9 +583,11 @@ export function itemsFromManifest(text, { baseDir = '.', sectionKey = 'category'
       date: date === null || date === undefined || date === '' ? null : String(date),
       estimated: isEstimated(row),
       section: sectionName(valueAt(row, sectionKey)),
+      sortDate: dateKey(block?.iso) ?? dateKey(row.dateLabel ?? block?.label),
+      keeper: group ? group.keeper === true : null,
     }));
   });
-  return { items, skipped };
+  return { items, skipped, ranges, frames };
 }
 
 // List file -> items: one path per line, then optional tab-separated label
@@ -585,17 +620,30 @@ export function itemsFromDir(dir) {
 
 const hasSeq = (item) => item.seq !== null && item.seq !== undefined && item.seq !== '';
 
-// Order, section, number and page the items.
-// - Order: by seq when every item has one (numeric-aware), else as given.
+// Filter, order, section, number and page the items.
+// - Filter: keepers (--keepers) keeps items whose group says keeper, and
+//   items with no group at all; `dropped` counts the rest.
+// - Order: sort 'date' (--sort date) by sortDate, undated last, otherwise
+//   stable; else by seq when every item has one (numeric-aware); else as given.
 // - Sections: in order of first appearance; each starts on a new page.
-// - Numbers: the seq itself (a numeric seq zero-padded), else a running
-//   count across the whole sheet, so one number names one photo.
+// - Numbers: the seq itself (a numeric seq zero-padded) when ordered by seq,
+//   else a running count across the whole sheet, so one number names one photo.
 // - Pages: perPage tiles each; a page knows its place in its section
 //   (from/to/total) and in the sheet (number/of).
-export function planPages(items, { perPage }) {
-  const bySeq = items.length > 0 && items.every(hasSeq);
+export function planPages(allItems, { perPage, sort = null, keepers = false }) {
+  const items = keepers ? allItems.filter((it) => it.keeper !== false) : allItems;
+  const byDate = sort === 'date';
+  const bySeq = !byDate && items.length > 0 && items.every(hasSeq);
   const ordered = items.map((item, index) => ({ item, index }));
-  if (bySeq) {
+  if (byDate) {
+    const key = (it) => it.sortDate ?? null;
+    ordered.sort((a, b) => {
+      const ka = key(a.item);
+      const kb = key(b.item);
+      if (ka === null || kb === null) return (ka === null) - (kb === null) || a.index - b.index;
+      return (ka < kb ? -1 : ka > kb ? 1 : 0) || a.index - b.index;
+    });
+  } else if (bySeq) {
     ordered.sort((a, b) => String(a.item.seq).localeCompare(String(b.item.seq), 'en', { numeric: true }) || a.index - b.index);
   }
   const sections = new Map(); // section name (null = untitled) -> items
@@ -630,7 +678,7 @@ export function planPages(items, { perPage }) {
     page.number = i + 1;
     page.of = pages.length;
   });
-  return { pages, count: items.length, sections: [...sections.keys()], bySeq };
+  return { pages, count: items.length, dropped: allItems.length - items.length, sections: [...sections.keys()], bySeq };
 }
 
 export function rangeText(page) {
@@ -1076,6 +1124,8 @@ async function pagesMain(argv) {
       title: { type: 'string' },
       sections: { type: 'string', default: 'category' },
       thumbs: { type: 'string' },
+      sort: { type: 'string' },
+      keepers: { type: 'boolean', default: false },
       help: { type: 'boolean', default: false },
     },
     allowPositionals: true,
@@ -1093,6 +1143,7 @@ async function pagesMain(argv) {
   if (!paper) {
     throw exitError(2, `--page must be letter, legal, tabloid, a4 or a3, then optionally portrait or landscape; got "${values.page}"`);
   }
+  if (values.sort !== undefined && values.sort !== 'date') throw exitError(2, `--sort must be "date", got "${values.sort}"`);
 
   // Read the input; anything wrong with it is a usage error, and nothing has
   // been written yet.
@@ -1105,18 +1156,24 @@ async function pagesMain(argv) {
   }
   let items;
   let skipped = 0;
+  let ranges = 0;
+  let frames = 0;
   if (st.isDirectory()) {
     items = itemsFromDir(input);
   } else {
     const text = readFileSync(input, 'utf8');
     const baseDir = path.dirname(path.resolve(input));
     if (/\.(jsonl|ndjson)$/i.test(input) || text.trimStart().startsWith('{')) {
-      ({ items, skipped } = itemsFromManifest(text, { baseDir, sectionKey: values.sections }));
+      ({ items, skipped, ranges, frames } = itemsFromManifest(text, { baseDir, sectionKey: values.sections }));
     } else {
       items = itemsFromList(text, baseDir);
     }
   }
+  const video = [ranges > 0 && `${ranges} video range`, frames > 0 && `${frames} video frame with no group.copy still`].filter(Boolean);
+  const skipNote = skipped === 0 ? null
+    : `skipped ${skipped} manifest row(s) with no image path${video.length ? ` (${video.join(', ')})` : ''}`;
   if (items.length === 0) {
+    if (skipNote) console.error(skipNote);
     console.error(`no images found in ${input}${st.isDirectory() ? ' (accepted: png jpg jpeg webp gif svg tif tiff)' : ''}`);
     return 1;
   }
@@ -1137,7 +1194,11 @@ async function pagesMain(argv) {
     if (clash) throw exitError(2, `--thumbs must not be a folder that holds source images (${values.thumbs} holds ${clash.name})`);
   }
 
-  const plan = planPages(items, { perPage: tiles.cols * tiles.rows });
+  const plan = planPages(items, { perPage: tiles.cols * tiles.rows, sort: values.sort ?? null, keepers: values.keepers });
+  if (plan.count === 0) {
+    console.error(`no keeper rows in ${input} (--keepers left out all ${plan.dropped})`);
+    return 1;
+  }
   const allTiles = plan.pages.flatMap((p) => p.tiles);
   for (const t of allTiles) t.missing = !existsSync(t.path);
   const missing = allTiles.filter((t) => t.missing);
@@ -1154,7 +1215,8 @@ async function pagesMain(argv) {
 
   for (const t of missing) console.error(`missing: ${t.num} ${t.path}`);
   for (const f of thumbs?.failed ?? []) console.error(`thumbnail failed, showing the original: ${f.tile.num} ${f.tile.path} (${f.reason})`);
-  if (skipped > 0) console.error(`skipped ${skipped} manifest row(s) with no image path`);
+  if (skipNote) console.error(skipNote);
+  if (plan.dropped > 0) console.error(`left out ${plan.dropped} row(s) that are not group keepers (--keepers)`);
   const named = plan.sections.filter((s) => s !== null).length;
   console.log(`${plan.count} image(s), ${named} section(s), ${plan.pages.length} page(s) of ${tiles.cols}x${tiles.rows}, ${missing.length} missing file(s)`);
   if (thumbs) console.log(`thumbnails: ${thumbs.made} made, ${thumbs.reused} reused, in ${values.thumbs}`);

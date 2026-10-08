@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import {
   escapeHtml, parseColumnArg, relHref, buildRows, sortRows, renderHtml,
   parseTiles, parsePaper, isEstimated, itemsFromManifest, itemsFromList, naturalCompare,
-  planPages, rangeText, renderPagesHtml, imText, thumbName,
+  planPages, rangeText, renderPagesHtml, imText, thumbName, dateKey,
 } from '../contact-sheet-cli.mjs';
 
 const CLI = new URL('../contact-sheet-cli.mjs', import.meta.url).pathname;
@@ -362,6 +362,40 @@ test('itemsFromManifest: contract rows and flat rows, sections by key, path-less
   assert.deepEqual(byGroup.map((it) => it.section), [null, 'g1', null]);
 });
 
+test('itemsFromManifest: video rows never become tiles; a frame shows its group.copy still from the manifest folder', () => {
+  const text = [
+    JSON.stringify({ id: 'f@1.000', kind: 'frame', paths: ['clip.mov'], t: 1, fileId: 'f' }),
+    JSON.stringify({ id: 'f@1-3', kind: 'range', paths: ['clip.mov'], fileId: 'f', in: 1, out: 3 }),
+    JSON.stringify({ id: 'f@2.000', kind: 'frame', paths: ['clip.mov'], t: 2, group: { groupId: 'v1', keeper: true, copy: 'stills/v1.jpg' } }),
+    JSON.stringify({ id: 's', kind: 'still', paths: ['/x/s.jpg'] }),
+  ].join('\n');
+  const { items, skipped, ranges, frames } = itemsFromManifest(text, { baseDir: '/base' });
+  assert.deepEqual(items.map((it) => it.path), ['/base/stills/v1.jpg', '/x/s.jpg']);
+  assert.deepEqual([skipped, ranges, frames], [2, 1, 1]);
+  assert.ok(items.every((it) => !it.path.endsWith('.mov')));
+});
+
+test('itemsFromManifest: sortDate from date.iso, else a dated label; keeper from the group block', () => {
+  const text = [
+    JSON.stringify({ paths: ['/x/a.jpg'], date: { iso: '2009-11-16T19:33:12', label: '2009-11-16' }, group: { keeper: true } }),
+    JSON.stringify({ paths: ['/x/b.jpg'], date: { iso: null, label: 'undated' }, group: { keeper: false } }),
+    JSON.stringify({ paths: ['/x/c.jpg'], dateLabel: '1984' }),
+    JSON.stringify({ paths: ['/x/d.jpg'], date: { label: '1990-03' }, group: { groupId: 'g' } }),
+  ].join('\n');
+  const { items } = itemsFromManifest(text);
+  assert.deepEqual(items.map((it) => it.sortDate), ['2009-11-16T19:33:12', null, '1984-07-01', '1990-03-15']);
+  assert.deepEqual(items.map((it) => it.keeper), [true, false, null, false]);
+});
+
+test('dateKey: ISO prefixes sort as written; year and month hints sit mid-period; anything else is null', () => {
+  assert.equal(dateKey('2009-11-16T19:33:12'), '2009-11-16T19:33:12');
+  assert.equal(dateKey('2009-11-16 19:33'), '2009-11-16T19:33');
+  assert.equal(dateKey('2009-11-16'), '2009-11-16');
+  assert.equal(dateKey('1971'), '1971-07-01');
+  assert.equal(dateKey('1971-05'), '1971-05-15');
+  for (const bad of ['undated', '', '19710502', 'c. 1971', null, undefined, 1971]) assert.equal(dateKey(bad), null, String(bad));
+});
+
 test('itemsFromManifest: a line that is not JSON is a usage error naming the line', () => {
   assert.throws(() => itemsFromManifest('{"path":"a.jpg"}\nnot json\n'), (e) => e.exitCode === 2 && /line 2/.test(e.message));
 });
@@ -404,6 +438,31 @@ test('planPages: if any item lacks seq, numbers are positional and the order is 
   const plan = planPages([item('a.jpg', { seq: '050' }), item('b.jpg')], { perPage: 36 });
   assert.equal(plan.bySeq, false);
   assert.deepEqual(plan.pages[0].tiles.map((t) => `${t.num}:${t.name}`), ['001:a.jpg', '002:b.jpg']);
+});
+
+test('planPages: sort date orders by sortDate, undated last in input order, numbers running even over a full seq', () => {
+  const items = [
+    item('u1.jpg', { seq: 1 }), item('b.jpg', { seq: 2, sortDate: '1999-01-01' }),
+    item('a.jpg', { seq: 3, sortDate: '1984-06-02T10:00:00' }), item('u2.jpg', { seq: 4 }),
+    item('c.jpg', { seq: 5, sortDate: '1984-06-02T10:00:00' }), item('d.jpg', { seq: 6, sortDate: '2009-11-16' }),
+  ];
+  const plan = planPages(items, { perPage: 36, sort: 'date' });
+  assert.equal(plan.bySeq, false);
+  assert.deepEqual(plan.pages[0].tiles.map((t) => `${t.num}:${t.name}`), [
+    '001:a.jpg', '002:c.jpg', '003:b.jpg', '004:d.jpg', '005:u1.jpg', '006:u2.jpg',
+  ]);
+  assert.deepEqual(planPages(items, { perPage: 36 }).pages[0].tiles.map((t) => t.name).slice(0, 2), ['u1.jpg', 'b.jpg']); // seq wins without --sort
+});
+
+test('planPages: keepers keeps group keepers and rows with no group block, and counts the rest', () => {
+  const items = [
+    item('k.jpg', { keeper: true }), item('n.jpg', { keeper: false }), item('plain.jpg'), item('k2.jpg', { keeper: true }),
+  ];
+  const plan = planPages(items, { perPage: 36, keepers: true });
+  assert.deepEqual(plan.pages[0].tiles.map((t) => `${t.num}:${t.name}`), ['001:k.jpg', '002:plain.jpg', '003:k2.jpg']);
+  assert.equal(plan.count, 3);
+  assert.equal(plan.dropped, 1);
+  assert.equal(planPages(items, { perPage: 36 }).count, 4);
 });
 
 test('planPages: pages hold perPage tiles, and each section starts a new page', () => {
@@ -519,6 +578,67 @@ test('CLI pages: a three-section manifest gives one page per section, numbered a
     assert.match(sheet[0], /class="num">002<\/span><span class="text">1972 <span class="approx"/);
     assert.match(sheet[2], /class="num">006<\/span><span class="text">1990 <span class="approx"/);
     assert.equal((readFileSync(out, 'utf8').match(/class="approx"/g) || []).length, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI pages: a shuffled near-dupe-pick manifest with --sort date --keepers shows keepers only, in date order', () => {
+  const root = tmpDir('contact-sheet-pages-');
+  try {
+    const photos = path.join(root, 'photos');
+    mkdirSync(photos);
+    const row = (n, iso, label, keeper) => {
+      const file = path.join(photos, `IMG_${n}.png`);
+      writePng(file, n * 20, 80, 160);
+      return { id: `id${n}`, kind: 'still', paths: [file], date: { iso, label }, group: { groupId: `g${n}`, keeper } };
+    };
+    const rows = [
+      row(4, null, 'undated', true), row(1, '2009-11-16T19:33:12', '2009-11-16', true),
+      row(6, '1971-07-01T00:00:00', '1971', false), row(3, '1984-06-02T10:00:05', '1984-06-02', false),
+      row(5, '1999-01-01T00:00:00', '1999-01-01', true), row(2, '1984-06-02T10:00:00', '1984-06-02', true),
+    ];
+    const manifest = path.join(root, 'manifest.jsonl');
+    writeFileSync(manifest, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    const out = path.join(root, 'sheet.html');
+    const r = runPages([manifest, '--out', out, '--sort', 'date', '--keepers']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /4 image\(s\), 0 section\(s\), 1 page\(s\)/);
+    assert.match(r.stderr, /left out 2 row\(s\) that are not group keepers/);
+    const html = readFileSync(out, 'utf8');
+    assert.deepEqual([...html.matchAll(/alt="(IMG_\d)\.png"/g)].map((m) => m[1]), ['IMG_2', 'IMG_5', 'IMG_1', 'IMG_4']);
+    assert.deepEqual([...html.matchAll(/class="num">(\d+)</g)].map((m) => m[1]), ['001', '002', '003', '004']);
+    assert.equal(runPages([manifest, '--out', out, '--sort', 'name']).status, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI pages: video frame and range rows never render the video; a frame with group.copy shows its still', () => {
+  const root = tmpDir('contact-sheet-pages-');
+  try {
+    writeFileSync(path.join(root, 'clip.mov'), 'not an image');
+    writePng(path.join(root, 'still.png'));
+    const frame = { id: 'f@1.000', kind: 'frame', paths: ['clip.mov'], t: 1, fileId: 'f' };
+    const range = { id: 'f@1-3', kind: 'range', paths: ['clip.mov'], fileId: 'f', in: 1, out: 3 };
+    const onlyVideo = path.join(root, 'video.jsonl');
+    writeFileSync(onlyVideo, [frame, range].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    const out = path.join(root, 'sheet.html');
+    const r = runPages([onlyVideo, '--out', out]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /skipped 2 manifest row\(s\) with no image path \(1 video range, 1 video frame with no group\.copy still\)/);
+    assert.equal(existsSync(out), false);
+
+    const withStill = path.join(root, 'stills.jsonl');
+    const copied = { ...frame, id: 'f@2.000', group: { groupId: 'v1', keeper: true, copy: 'still.png' } };
+    writeFileSync(withStill, [frame, range, copied].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    const r2 = runPages([withStill, '--out', out]);
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.match(r2.stdout, /1 image\(s\)/);
+    assert.match(r2.stderr, /skipped 2 manifest row\(s\) with no image path \(1 video range, 1 video frame/);
+    const html = readFileSync(out, 'utf8');
+    assert.match(html, /<img src="still\.png"/);
+    assert.doesNotMatch(html, /clip\.mov/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
