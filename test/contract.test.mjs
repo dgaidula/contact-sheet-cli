@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -371,4 +371,115 @@ test('verdict(): an item no rule covers throws, so it can never pass as ok', asy
   assert.throws(() => verdict({ kind: 'mystery' }), /no rule for a mystery item/);
   assert.equal(verdict({ kind: 'output' }), 'ok');
   assert.equal(verdict({ kind: 'output', refused: true, error: 'x' }), 'fail');
+});
+
+test('the grid answers --version and -h, as the header documents, with exit 0; after -- they are names again', (t) => {
+  const root = tmp(t);
+  const grid = (args) => spawnSync(process.execPath, [TOOL, ...args], { encoding: 'utf8', cwd: root });
+  for (const args of [['--version'], ['--version', root]]) {
+    const r = grid(args);
+    assert.deepEqual([r.status, r.stdout, r.stderr], [0, `contact-sheet-cli ${VERSION}\n`, ''], args.join(' '));
+  }
+  const h = grid(['-h']);
+  assert.deepEqual([h.status, h.stdout, h.stderr], [0, grid(['--help']).stdout, '']);
+  assert.match(h.stdout, /^contact-sheet-cli: build a self-contained HTML contact sheet/);
+  const named = grid(['--', '--version']);
+  assert.deepEqual([named.status, named.stderr], [1, 'directory not found: --version\n']);
+  assert.deepEqual(readdirSync(root), []);
+});
+
+test('--thumbs naming the same path as --out or --pdf is a usage error up front, in the dry run as under --go', (t) => {
+  const j = makeJob(t);
+  const pdf = path.join(j.root, 'sheet.pdf');
+  for (const [extra, message] of [[['--thumbs', j.out], '--out and --thumbs'], [['--pdf', pdf, '--thumbs', pdf], '--pdf and --thumbs']]) {
+    for (const go of [[], ['--go']]) {
+      const r = pages([j.manifest, '--out', j.out, ...extra, ...go]);
+      assert.equal(r.status, 2, `${[...extra, ...go].join(' ')}: ${r.stdout}${r.stderr}`);
+      assert.equal(r.stdout, '');
+      assert.match(r.stderr, new RegExp(`^error: ${message} name the same path\n`));
+    }
+  }
+  assert.equal(existsSync(path.dirname(j.out)), false);
+  assert.equal(existsSync(pdf), false);
+});
+
+test('--thumbs is refused for the real folder behind a symlinked source, and for a video row’s folder', { skip: !hasThumbTool && 'neither sips nor magick available' }, (t) => {
+  const j = makeJob(t);
+  const real = path.join(j.root, 'real');
+  mkdirSync(real);
+  writeFileSync(path.join(real, 'r.png'), PNG);
+  symlinkSync(path.join(real, 'r.png'), path.join(j.dir, 'r.png'));
+  const videos = path.join(j.root, 'videos');
+  mkdirSync(videos);
+  writeFileSync(path.join(videos, 'clip.mov'), 'not an image');
+  const rows = [{ id: 'r', paths: [path.join(j.dir, 'r.png')] }, { id: 'v@1-2', kind: 'range', paths: [path.join(videos, 'clip.mov')] }];
+  writeFileSync(j.manifest, readFileSync(j.manifest, 'utf8') + rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  for (const [thumbs, holds] of [[real, 'r.png'], [videos, 'clip.mov']]) {
+    const r = pages([j.manifest, '--out', j.out, '--thumbs', thumbs, '--go']);
+    assert.equal(r.status, 2, `${thumbs}: ${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`--thumbs must not be a folder that holds source images \\(.* holds ${holds.replace('.', '\\.')}\\)`));
+  }
+  assert.deepEqual(readdirSync(real), ['r.png']);
+  assert.deepEqual(readdirSync(videos), ['clip.mov']);
+});
+
+test('a refused output does not stop the others: the thumbnails refused, the sheet after them still written', { skip: !hasThumbTool && 'neither sips nor magick available' }, (t) => {
+  const j = makeJob(t);
+  const file = path.join(j.root, 'file.txt');
+  writeFileSync(file, 'x');
+  const r = pages([j.manifest, '--out', j.out, '--thumbs', file, '--go', '--json']);
+  assert.equal(r.status, 1, r.stderr);
+  assert.deepEqual(outputs(r).map((it) => [it.data.output, it.verdict, it.changed]), [['thumbs', 'refuse', false], ['html', 'ok', true]]);
+  assert.ok(existsSync(j.out));
+});
+
+test('--go re-checks each output just before writing it: a thumbnail that lands on --out is not overwritten', { skip: !hasThumbTool && 'neither sips nor magick available' }, async (t) => {
+  const { thumbName } = await import(TOOL_URL);
+  const j = makeJob(t);
+  const thumbs = path.join(j.root, 'thumbs');
+  const out = path.join(thumbs, thumbName(path.join(j.dir, 'p1.png')));
+  const r = pages([j.manifest, '--out', out, '--thumbs', thumbs, '--go', '--json']);
+  assert.equal(r.status, 1, r.stderr);
+  assert.deepEqual(outputs(r).map((it) => [it.data.output, it.verdict, it.data.refused ?? null]), [['thumbs', 'ok', null], ['html', 'refuse', 'another file is there']]);
+  assert.deepEqual([...readFileSync(out).subarray(0, 2)], [0xff, 0xd8], 'the thumbnail is still a JPEG');
+});
+
+test('a replaced sheet is a new file renamed into place, and keeps the mode of the one it replaces', (t) => {
+  const j = makeJob(t);
+  assert.equal(pages([j.manifest, '--out', j.out, '--go']).status, 0);
+  chmodSync(j.out, 0o640);
+  const before = statSync(j.out).ino;
+  const again = pages([j.manifest, '--out', j.out, '--go']);
+  assert.equal(again.status, 0, again.stderr);
+  assert.notEqual(statSync(j.out).ino, before, 'renamed into place, not rewritten where it was');
+  assert.equal(statSync(j.out).mode & 0o777, 0o640);
+});
+
+test('the PDF goes to a temp name of its own, random and created before magick writes it, and is titled by its target', (t) => {
+  const j = makeJob(t);
+  // A stub magick: logs its arguments, notes whether its output already exists
+  // as a plain file, and writes a stand-in output.
+  const bin = path.join(j.root, 'bin');
+  mkdirSync(bin);
+  const log = path.join(j.root, 'magick.log');
+  writeFileSync(path.join(bin, 'magick'), [
+    '#!/bin/sh',
+    '[ "$1" = "-version" ] && exit 0',
+    'for a; do last=$a; done',
+    `printf '%s\\n' "$@" >> '${log}'`,
+    `if [ -f "$last" ] && [ ! -L "$last" ]; then echo "reserved: $last" >> '${log}'; fi`,
+    'echo "%PDF-1.4 stub" > "$last"',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const pdf = path.join(j.root, 'review', 'sheet.pdf');
+  const r = pages([j.manifest, '--out', j.out, '--pdf', pdf, '--go', '--json'], { env: { ...process.env, PATH: `${bin}:/bin` } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const lines = readFileSync(log, 'utf8').split('\n');
+  const temp = lines.find((l) => l.endsWith('.tmp.pdf'));
+  assert.equal(path.dirname(temp), path.dirname(pdf), 'beside its target');
+  assert.match(path.basename(temp), /^\.sheet\.pdf\.[0-9a-f]{12}\.tmp\.pdf$/, 'a random name, not the process id');
+  assert.ok(lines.includes(`reserved: ${temp}`), 'created, exclusively, before magick writes it');
+  assert.ok(lines.includes('pdf:Title=sheet'), 'titled by the target, not the temp name');
+  assert.equal(readFileSync(pdf, 'utf8'), '%PDF-1.4 stub\n');
+  assert.deepEqual(readdirSync(path.dirname(pdf)).filter((f) => f.includes('.tmp')), []);
 });

@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import {
   escapeHtml, parseColumnArg, relHref, buildRows, sortRows, renderHtml,
   parseTiles, parsePaper, isEstimated, itemsFromManifest, itemsFromList, naturalCompare,
-  planPages, rangeText, renderPagesHtml, imText, thumbName, dateKey,
+  planPages, rangeText, renderPagesHtml, imText, imPath, thumbName, dateKey, pdfLayout,
 } from '../contact-sheet-cli.mjs';
 
 const CLI = new URL('../contact-sheet-cli.mjs', import.meta.url).pathname;
@@ -388,6 +388,13 @@ test('itemsFromManifest: sortDate from date.iso, else a dated label; keeper from
   assert.deepEqual(items.map((it) => it.keeper), [true, false, null, false]);
 });
 
+test('itemsFromManifest: only keeper: true is a keeper; "false", 1 or "yes" are not', () => {
+  const text = ['false', 1, 'yes', true].map((keeper, i) => JSON.stringify({ paths: [`/x/${i}.jpg`], group: { keeper } })).join('\n');
+  const { items } = itemsFromManifest(text);
+  assert.deepEqual(items.map((it) => it.keeper), [false, false, false, true]);
+  assert.deepEqual(planPages(items, { perPage: 36, keepers: true }).pages[0].tiles.map((t) => t.name), ['3.jpg']);
+});
+
 test('dateKey: ISO prefixes sort as written; year and month hints sit mid-period; anything else is null', () => {
   assert.equal(dateKey('2009-11-16T19:33:12'), '2009-11-16T19:33:12');
   assert.equal(dateKey('2009-11-16 19:33'), '2009-11-16T19:33');
@@ -500,6 +507,12 @@ test('imText: neutralises ImageMagick %-escapes, backslashes and a leading @', (
   assert.equal(imText('009  1984 ≈'), '009  1984 ≈');
 });
 
+test('imPath: a file name handed to magick has every % doubled, so none expands', () => {
+  assert.equal(imPath('/a/pct%d.png'), '/a/pct%%d.png');
+  assert.equal(imPath('/a/photo%20one%.png'), '/a/photo%%20one%%.png');
+  assert.equal(imPath('/a/plain.png'), '/a/plain.png');
+});
+
 test('thumbName: same stem from two folders never collides', () => {
   assert.notEqual(thumbName('/a/IMG_0001.JPG'), thumbName('/b/IMG_0001.JPG'));
   assert.match(thumbName('/a/IMG 0001.JPG'), /^IMG_0001-[0-9a-f]{8}\.jpg$/);
@@ -528,6 +541,26 @@ test('renderPagesHtml: masthead, eyebrow only on a titled section, missing and n
   assert.match(html, /page 2 of 2/);
 });
 
+test('renderPagesHtml: the title, a section, a tile caption, an alt and a missing name are all escaped', () => {
+  const plan = planPages([
+    item('<n1>.png', { section: '<s1>', label: '<x1>' }),
+    item('<m1>.png', { section: '<s1>' }),
+  ], { perPage: 4 });
+  plan.pages[0].tiles[1].missing = true;
+  const html = renderPagesHtml({
+    title: '<t1>', plan, paper: parsePaper('letter landscape'), tiles: { cols: 2, rows: 2 },
+    outPath: '/photos/sheet.html', generatedAt: '2026-10-09 09:00',
+  });
+  for (const marker of ['t1', 's1', 'x1', 'n1', 'm1']) {
+    assert.doesNotMatch(html, new RegExp(`<${marker}>`), marker);
+  }
+  assert.match(html, /<title>&lt;t1&gt;<\/title>/);
+  assert.match(html, /<h1>&lt;s1&gt;<\/h1>/);
+  assert.match(html, /<span class="text">&lt;x1&gt;<\/span>/);
+  assert.match(html, /alt="&lt;n1&gt;\.png"/);
+  assert.match(html, /<p class="note">missing<br>&lt;m1&gt;\.png<\/p>/);
+});
+
 // ---- review pages (`pages`): CLI tests -----------------------------------------
 
 const runPages = (args, opts = {}) =>
@@ -536,6 +569,24 @@ const hasMagick = !(spawnSync('magick', ['-version']).error?.code === 'ENOENT');
 const hasThumbTool = (process.platform === 'darwin' && !spawnSync('sips', ['--version']).error) || hasMagick;
 const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 const pages = (html) => html.split('<section class="page">').slice(1);
+
+// The colour inside tile k (0-based) of a PDF's first page, letter landscape,
+// 6x6: the page is the PDF's first embedded JPEG, read back with magick. The
+// point is a quarter of the way down the frame, clear of any note text.
+function pdfTileColour(pdf, k) {
+  const bytes = readFileSync(pdf);
+  const start = bytes.indexOf(Buffer.from([0xff, 0xd8, 0xff]));
+  const end = bytes.lastIndexOf(Buffer.from([0xff, 0xd9]), bytes.indexOf('endstream', start));
+  const jpg = path.join(path.dirname(pdf), 'page-1-probe.jpg');
+  writeFileSync(jpg, bytes.subarray(start, end + 2));
+  const L = pdfLayout(parsePaper('letter landscape'), { cols: 6, rows: 6 });
+  const x = L.margin + (k % 6) * (L.cellW + L.gap) + Math.floor(L.cellW / 2);
+  const y = L.tilesY + Math.floor(k / 6) * (L.cellH + L.gap) + Math.floor(L.frameH / 4);
+  const out = execFileSync('magick', [jpg, '-format', `%[fx:int(255*p{${x},${y}}.r)],%[fx:int(255*p{${x},${y}}.g)],%[fx:int(255*p{${x},${y}}.b)]`, 'info:'], { encoding: 'utf8' });
+  rmSync(jpg);
+  return out.split(',').map(Number);
+}
+const near = (rgb, want) => rgb.every((v, i) => Math.abs(v - want[i]) < 40);
 
 // A three-section manifest: picks, then two maybe groups, interleaved in the
 // file, with contract date blocks (some estimated) and one flat legacy row.
@@ -796,6 +847,78 @@ test('CLI pages: --pdf with ImageMagick writes one PDF page per sheet page; sour
   }
 });
 
+test('CLI pages: --pdf reads and writes file names with % literally, with and without --thumbs', { skip: !hasMagick && 'magick not on PATH' }, () => {
+  const root = tmpDir('contact-sheet-pages-');
+  try {
+    const imgs = path.join(root, 'imgs');
+    mkdirSync(imgs);
+    writePng(path.join(imgs, 'a%d.png'), 255, 0, 0); // red; ImageMagick would read a0.png for it
+    writePng(path.join(imgs, 'a0.png'), 0, 0, 255); // blue, and not in the list
+    writePng(path.join(imgs, 'photo%20one.png'), 0, 255, 0); // green; %20 would expand to padding
+    const list = path.join(root, 'list.txt');
+    writeFileSync(list, 'imgs/a%d.png\nimgs/photo%20one.png\n');
+    const pdf = path.join(root, 'r%d.pdf');
+    const r = runPages([list, '--out', path.join(root, 'sheet.html'), '--pdf', pdf, '--go', '--brief']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(readdirSync(root).sort(), ['imgs', 'list.txt', 'r%d.pdf', 'sheet.html'], 'exactly r%d.pdf, and no temp file');
+    assert.ok(near(pdfTileColour(pdf, 0), [255, 0, 0]), `tile 1 is a%d.png: ${pdfTileColour(pdf, 0)}`);
+    assert.ok(near(pdfTileColour(pdf, 1), [0, 255, 0]), `tile 2 is photo%20one.png: ${pdfTileColour(pdf, 1)}`);
+
+    // Thumbnails by magick (no sips on this PATH), then the PDF from them.
+    const magickDir = path.dirname(execFileSync('sh', ['-c', 'command -v magick'], { encoding: 'utf8' }).trim());
+    const thumbs = path.join(root, 'thumbs');
+    const t = runPages([list, '--out', path.join(root, 'sheet.html'), '--pdf', pdf, '--thumbs', thumbs, '--go', '--json'], { env: { ...process.env, PATH: magickDir } });
+    assert.equal(t.status, 0, t.stdout + t.stderr);
+    const sipsToo = process.platform === 'darwin' && existsSync(path.join(magickDir, 'sips'));
+    assert.equal(JSON.parse(t.stdout).items.find((it) => it.data?.output === 'thumbs').data.tool, sipsToo ? 'sips' : 'magick');
+    assert.ok(near(pdfTileColour(pdf, 0), [255, 0, 0]), `thumbnailed tile 1 is a%d.png: ${pdfTileColour(pdf, 0)}`);
+    assert.ok(near(pdfTileColour(pdf, 1), [0, 255, 0]), `thumbnailed tile 2 is photo%20one.png: ${pdfTileColour(pdf, 1)}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI pages: an SVG tile is a placeholder in the PDF, so an image it references never reaches it; the HTML still shows it', { skip: !hasMagick && 'magick not on PATH' }, () => {
+  const root = tmpDir('contact-sheet-pages-');
+  try {
+    const secret = path.join(root, 'secret');
+    mkdirSync(secret);
+    writePng(path.join(secret, 'leak.png'), 255, 0, 0); // red, and in no manifest
+    const svg = path.join(root, 'ref.svg');
+    writeFileSync(svg, `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="40"><image x="0" y="0" width="40" height="40" xlink:href="${path.join(secret, 'leak.png')}"/></svg>`);
+    const list = path.join(root, 'list.txt');
+    writeFileSync(list, 'ref.svg\n');
+    const pdf = path.join(root, 'sheet.pdf');
+    const out = path.join(root, 'sheet.html');
+    const r = runPages([list, '--out', out, '--pdf', pdf, '--go', '--brief']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const tile = pdfTileColour(pdf, 0);
+    assert.ok(near(tile, [0xef, 0xef, 0xed]), `the SVG tile is the plain ground, not the referenced image: ${tile}`);
+    assert.match(readFileSync(out, 'utf8'), /<img src="ref\.svg"/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI pages: a manifest or a list saved with a byte-order mark reads like one without', () => {
+  const root = tmpDir('contact-sheet-pages-');
+  try {
+    writePng(path.join(root, 'a.png'));
+    const manifest = path.join(root, 'bom.jsonl');
+    writeFileSync(manifest, '\ufeff' + JSON.stringify({ id: 'a', paths: ['a.png'] }) + '\n');
+    const list = path.join(root, 'bom.txt');
+    writeFileSync(list, '\ufeffa.png\n');
+    for (const input of [manifest, list]) {
+      const r = runPages([input, '--out', path.join(root, 'sheet.html'), '--json']);
+      assert.equal(r.status, 0, `${input}: ${r.stdout}${r.stderr}`);
+      const { data } = JSON.parse(r.stdout).items.find((it) => it.data?.output === 'html');
+      assert.deepEqual([data.images, data.missing], [1, 0], input);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('CLI pages: --thumbs writes downscaled copies and shows them; the full image stays the zoom target', { skip: !hasThumbTool && 'neither sips nor magick available' }, () => {
   const root = tmpDir('contact-sheet-pages-');
   try {
@@ -828,6 +951,29 @@ test('CLI pages: --thumbs refuses a folder that holds source images', () => {
     assert.equal(r.status, 2, r.stderr);
     assert.match(r.stderr, /--thumbs must not be a folder that holds source images/);
     assert.equal(readdirSync(photos).length, 6);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI: the grid quick start, then pages in the same folder: pages writes contact-pages.html and leaves the grid sheet alone', () => {
+  const root = tmpDir('contact-sheet-cli-');
+  try {
+    for (const dir of ['original', 'redrawn']) {
+      mkdirSync(path.join(root, dir));
+      writePng(path.join(root, dir, 'a.png'));
+    }
+    execFileSync(process.execPath, [CLI, 'original/', 'redrawn/'], { cwd: root, encoding: 'utf8' });
+    const grid = readFileSync(path.join(root, 'contact-sheet.html'));
+    writeFileSync(path.join(root, 'picks.jsonl'), JSON.stringify({ id: 'a', paths: ['original/a.png'] }) + '\n');
+    const r = runPages(['picks.jsonl', '--go', '--json'], { cwd: root });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(readFileSync(path.join(root, 'contact-pages.html'), 'utf8'), /<meta name="generator" content="contact-sheet-cli pages">/);
+    assert.deepEqual(readFileSync(path.join(root, 'contact-sheet.html')), grid);
+    const onGrid = runPages(['picks.jsonl', '--out', 'contact-sheet.html', '--json'], { cwd: root });
+    assert.equal(onGrid.status, 1);
+    assert.equal(JSON.parse(onGrid.stdout).items.find((it) => it.data?.output === 'html').reason,
+      'contact-sheet.html is there, and it is not a sheet pages wrote; choose another --out, or move that file away');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

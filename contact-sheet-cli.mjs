@@ -58,7 +58,7 @@
 // what it would write, and writes nothing. --go writes the HTML, and the PDF
 // and the thumbnails when they are asked for.
 //
-//   manifest  JSONL, one row per image (the photo tools' shared manifest).
+//   manifest  JSONL, one row per image.
 //             Image: paths[0], or path. Video rows hold a video, never
 //             shown: a frame row shows its still (group.copy, from the
 //             manifest's folder) or is skipped; a range row is skipped.
@@ -72,7 +72,7 @@
 //             section columns. Blank lines and # comments are skipped.
 //   dir       Its images (flat, not recursed), in natural filename order.
 //
-//   --out <file>      HTML to write (default contact-sheet.html)
+//   --out <file>      HTML to write (default contact-pages.html)
 //   --pdf <file>      also write a PDF; needs ImageMagick ("magick") on PATH
 //   --tiles <CxR>     columns x rows per page (default 6x6)
 //   --page "<size>"   letter, legal, tabloid, a4 or a3, then portrait or
@@ -114,11 +114,11 @@
 // failed (the original is shown). skip = a row not drawn (a video row, a row
 // with no image, a non-keeper under --keepers), thumbnails already up to
 // date, or an output not written because there was nothing to draw. refuse =
-// an output --go will not write (a file this tool did not write is in the
+// an output --go will not write (a file pages did not write is in the
 // way, or its folder cannot be written), or no images to lay out. fail = an
 // input that cannot be read, or a write that failed.
 //
-// --go replaces an existing --out or --pdf only when this tool wrote it (the
+// --go replaces an existing --out or --pdf only when pages wrote it (the
 // HTML's generator tag, the PDF's Creator). Anything else in the way is
 // refused, and the other outputs are still written.
 //
@@ -133,7 +133,7 @@ import { lstatSync, accessSync, chmodSync, openSync, readSync, fstatSync, closeS
 import { parseArgs } from 'node:util';
 import { realpathSync } from 'node:fs';
 import { execFileSync, execFile, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { tmpdir, availableParallelism } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -587,16 +587,18 @@ function lineError(line, message) {
   return Object.assign(new Error(`manifest line ${line} ${message}`), { line });
 }
 
-// Manifest JSONL -> { items, skipped, ranges, frames, skippedRows }. A row
+// Manifest JSONL -> { items, skipped, ranges, frames, skippedRows, videos }. A row
 // with no image path is counted in `skipped`, not drawn. Video rows carry the
 // video in `paths`, never an image: a range row is skipped (and counted in
 // `ranges` too); a frame row shows its extracted still, `group.copy`
 // (relative to the manifest's folder), or without one is skipped (and counted
 // in `frames`). `skippedRows` names each skipped row: its line, its id, and
-// why (range, frame, or none: no image path).
+// why (range, frame, or none: no image path). `videos` lists every video row's
+// paths[0], resolved, since its folder holds a source too.
 export function itemsFromManifest(text, { baseDir = '.', sectionKey = 'category' } = {}) {
   const items = [];
   const skippedRows = [];
+  const videos = [];
   let skipped = 0;
   let ranges = 0;
   let frames = 0;
@@ -612,6 +614,9 @@ export function itemsFromManifest(text, { baseDir = '.', sectionKey = 'category'
       throw lineError(i + 1, 'is not a JSON object');
     }
     const group = row.group && typeof row.group === 'object' ? row.group : null;
+    if ((row.kind === 'range' || row.kind === 'frame') && Array.isArray(row.paths) && typeof row.paths[0] === 'string') {
+      videos.push(path.resolve(baseDir, row.paths[0]));
+    }
     const file = row.kind === 'range' ? null
       : row.kind === 'frame' ? (typeof group?.copy === 'string' && group.copy !== '' ? group.copy : null)
       : Array.isArray(row.paths) && typeof row.paths[0] === 'string' ? row.paths[0]
@@ -639,7 +644,7 @@ export function itemsFromManifest(text, { baseDir = '.', sectionKey = 'category'
       keeper: group ? group.keeper === true : null,
     }));
   });
-  return { items, skipped, ranges, frames, skippedRows };
+  return { items, skipped, ranges, frames, skippedRows, videos };
 }
 
 // List file -> items: one path per line, then optional tab-separated label
@@ -993,6 +998,16 @@ function runFile(cmd, args) {
   });
 }
 
+// A temp file beside `target` with a random name, created empty and
+// exclusively (`wx`), so it was not there before and no symlink sits at it:
+// the caller owns it, and removes it. When the create fails, nothing was
+// created, so there is nothing of the caller's to remove.
+function reserveTemp(target, suffix) {
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${randomBytes(6).toString('hex')}${suffix}`);
+  closeSync(openSync(tmp, 'wx'));
+  return tmp;
+}
+
 // Downscaled JPEG copies in `dir`, reused while newer than their source; sets
 // tile.src on success. Sources are only ever read.
 async function makeThumbs(tiles, dir, tool) {
@@ -1011,12 +1026,18 @@ async function makeThumbs(tiles, dir, tool) {
         tally.reused++;
         continue;
       }
-      const tmp = path.join(dir, `.${path.basename(dest, '.jpg')}.${process.pid}-${index}.tmp.jpg`);
+      let tmp;
+      try {
+        tmp = reserveTemp(dest, '.tmp.jpg');
+      } catch (e) {
+        tally.failed.push({ tile, reason: `cannot create a temp file: ${e.message}`.slice(0, 200) });
+        continue;
+      }
       const args = tool === 'sips'
         ? ['-s', 'format', 'jpeg', '-s', 'formatOptions', '82', '-Z', String(THUMB_EDGE), tile.path, '--out', tmp]
-        : [`${tile.path}[0]`, '-auto-orient', '-thumbnail', `${THUMB_EDGE}x${THUMB_EDGE}>`, '-quality', '82', tmp];
+        : [`${imPath(tile.path)}[0]`, '-auto-orient', '-thumbnail', `${THUMB_EDGE}x${THUMB_EDGE}>`, '-quality', '82', imPath(tmp)];
       const { error, stderr } = await runFile(tool, args);
-      if (error || !existsSync(tmp)) {
+      if (error || !existsSync(tmp) || statSync(tmp).size === 0) {
         rmSync(tmp, { force: true });
         const reason = stderr.trim().split('\n').pop() || error?.message || 'no output';
         tally.failed.push({ tile, reason: reason.slice(0, 200) });
@@ -1036,6 +1057,14 @@ async function makeThumbs(tiles, dir, tool) {
 export function imText(s) {
   const t = String(s).replace(/\\/g, '\\\\').replace(/%/g, '%%');
   return t.startsWith('@') ? `\\${t}` : t;
+}
+
+// ImageMagick also expands % escapes in file names, read and written (so
+// `pct%d.png` reads `pct0.png`, and `r%d.pdf` writes `r0.pdf`); `%%` is a
+// literal %. Every path handed to magick goes through this. The paths are
+// absolute, so none starts with `@` or `-`.
+export function imPath(p) {
+  return String(p).replace(/%/g, '%%');
 }
 
 function fitText(s, maxChars) {
@@ -1101,13 +1130,18 @@ export function renderPagesPdf({ title, plan, paper, tiles, pdfPath, generatedAt
       const tileArgs = page.tiles.flatMap((t, k) => {
         const x = L.margin + (k % tiles.cols) * (L.cellW + L.gap);
         const y = L.tilesY + Math.floor(k / tiles.cols) * (L.cellH + L.gap);
-        const image = t.missing
+        // An SVG is never handed to ImageMagick, which would follow the file's
+        // own <image> references and draw whatever they point at into the PDF.
+        const svg = !t.missing && t.ext === 'svg';
+        const image = t.missing || svg
           ? [`xc:${ground}[${frame}!]`]
-          : ['(', `${t.src ?? t.path}[0]`, '-auto-orient', '-thumbnail', frame,
+          : ['(', `${imPath(t.src ?? t.path)}[0]`, '-auto-orient', '-thumbnail', frame,
             '-background', ground, '-gravity', 'center', '-extent', frame, ')'];
         const label = t.missing ? `${t.num}  missing` : `${t.num}  ${t.text}${t.approx ? ' ≈' : ''}`;
+        const note = svg ? ['-gravity', 'North', '-annotate', `${signed(x + L.cellW / 2 - L.W / 2)}${signed(y + L.frameH / 2 - L.labelSize / 2)}`,
+          imText(fitText('SVG — not drawn in PDF', labelChars))] : [];
         return [
-          ...image, '-gravity', 'NorthWest', '-geometry', `+${x}+${y}`, '-composite',
+          ...image, '-gravity', 'NorthWest', '-geometry', `+${x}+${y}`, '-composite', ...note,
           '-gravity', 'North', '-annotate', `${signed(x + L.cellW / 2 - L.W / 2)}${signed(y + L.frameH + L.labelGap)}`,
           imText(fitText(label, labelChars)),
         ];
@@ -1133,13 +1167,13 @@ export function renderPagesPdf({ title, plan, paper, tiles, pdfPath, generatedAt
         '-pointsize', String(L.footSize), '-fill', '#6b6b6b',
         '-gravity', 'SouthWest', '-annotate', `+${L.margin}+${L.bottom}`, imText(`generated ${generatedAt}`),
         '-gravity', 'SouthEast', '-annotate', `+${L.margin}+${L.bottom}`, imText(`page ${page.number} of ${page.of}`),
-        '-units', 'PixelsPerInch', '-density', String(PDF_DPI), '-quality', '88', pageJpg,
+        '-units', 'PixelsPerInch', '-density', String(PDF_DPI), '-quality', '88', imPath(pageJpg),
       ], `on page ${page.number}`);
       return pageJpg;
     });
     magick([
-      '-units', 'PixelsPerInch', '-density', String(PDF_DPI), ...pageFiles, '-compress', 'jpeg', '-quality', '88',
-      '-define', `pdf:Creator=${PDF_CREATOR}`, '-define', `pdf:Title=${docTitle}`, pdfPath,
+      '-units', 'PixelsPerInch', '-density', String(PDF_DPI), ...pageFiles.map(imPath), '-compress', 'jpeg', '-quality', '88',
+      '-define', `pdf:Creator=${PDF_CREATOR}`, '-define', `pdf:Title=${docTitle}`, imPath(pdfPath),
     ], 'writing the PDF');
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -1201,10 +1235,11 @@ function writable(dir) {
 // again just before --go writes it. Returns { target, replaces }, or
 // { refuse, detail } in a few words and in full. A symlink is followed, so a
 // link keeps pointing where it did. Refused: a dangling symlink, a folder or
-// any other non-file in the way, a file this tool did not write (`isOwn`), or
-// a folder that cannot be written. With `folder`, the output is a directory
-// (the thumbnails), and must be one where it exists.
-function checkOutput(file, { isOwn = () => false, folder = false } = {}) {
+// any other non-file in the way, a file pages did not write (`isOwn`; `what`
+// names the kind in the refusal), or a folder that cannot be written. With
+// `folder`, the output is a directory (the thumbnails), and must be one where
+// it exists.
+function checkOutput(file, { isOwn = () => false, what = 'file', folder = false } = {}) {
   const abs = path.resolve(file);
   const no = (refuse, detail) => ({ refuse, detail });
   let target = abs;
@@ -1235,7 +1270,7 @@ function checkOutput(file, { isOwn = () => false, folder = false } = {}) {
     } catch (e) {
       return no('cannot read it', `cannot read ${file}: ${e.message}`);
     }
-    if (!own) return no('another file is there', `${file} is there, and this tool did not write it`);
+    if (!own) return no('another file is there', `${file} is there, and it is not a ${what} pages wrote`);
     return writable(path.dirname(target)) ? { target, replaces: true } : no('folder not writable', `the folder of ${file} is not writable`);
   }
   // Not there yet: the nearest existing ancestor must be a folder that can be written.
@@ -1278,9 +1313,9 @@ function keepMode(tmp, target) {
 // Write a file whole or not at all: a temp file beside the target, then a
 // rename over it.
 function writeAtomic(target, text) {
-  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.tmp`);
+  const tmp = reserveTemp(target, '.tmp');
   try {
-    writeFileSync(tmp, text, { flag: 'wx' });
+    writeFileSync(tmp, text, { flag: 'r+' });
     keepMode(tmp, target);
     renameSync(tmp, target);
   } catch (e) {
@@ -1292,14 +1327,14 @@ function writeAtomic(target, text) {
 // Read the input into images (and, for a manifest, the rows it skipped).
 // Throws on an unreadable file or a broken manifest line.
 function readPagesInput(input, st, sectionKey) {
-  if (st.isDirectory()) return { kind: 'dir', images: itemsFromDir(input), skippedRows: [] };
-  const text = readFileSync(input, 'utf8');
+  if (st.isDirectory()) return { kind: 'dir', images: itemsFromDir(input), skippedRows: [], videos: [] };
+  const text = readFileSync(input, 'utf8').replace(/^\uFEFF/, ''); // a byte-order mark, as some editors save
   const baseDir = path.dirname(path.resolve(input));
   if (/\.(jsonl|ndjson)$/i.test(input) || text.trimStart().startsWith('{')) {
-    const { items, skippedRows } = itemsFromManifest(text, { baseDir, sectionKey });
-    return { kind: 'manifest', images: items, skippedRows };
+    const { items, skippedRows, videos } = itemsFromManifest(text, { baseDir, sectionKey });
+    return { kind: 'manifest', images: items, skippedRows, videos };
   }
-  return { kind: 'list', images: itemsFromList(text, baseDir), skippedRows: [] };
+  return { kind: 'list', images: itemsFromList(text, baseDir), skippedRows: [], videos: [] };
 }
 
 // The plan's sections, for the HTML item: each one's first and last number,
@@ -1348,7 +1383,7 @@ async function pagesMain(argv) {
     parsed = parseArgs({
       args: argv,
       options: {
-        out: { type: 'string', default: 'contact-sheet.html' },
+        out: { type: 'string', default: 'contact-pages.html' },
         pdf: { type: 'string' },
         tiles: { type: 'string', default: '6x6' },
         page: { type: 'string', default: 'letter landscape' },
@@ -1388,6 +1423,8 @@ async function pagesMain(argv) {
   // One file for two outputs: compared as a case-insensitive volume would.
   const same = (a, b) => path.resolve(a).normalize('NFC').toLowerCase() === path.resolve(b).normalize('NFC').toLowerCase();
   if (values.pdf !== undefined && same(values.pdf, values.out)) usageError('--out and --pdf name the same file');
+  if (values.thumbs !== undefined && same(values.thumbs, values.out)) usageError('--out and --thumbs name the same path');
+  if (values.thumbs !== undefined && values.pdf !== undefined && same(values.thumbs, values.pdf)) usageError('--pdf and --thumbs name the same path');
   const input = positionals[0];
   let st;
   try {
@@ -1452,6 +1489,8 @@ async function pagesMain(argv) {
   if (values.thumbs !== undefined) {
     // Folders compared by identity (device and inode), not by name, so a
     // symlink, another letter case or /tmp for /private/tmp cannot hide one.
+    // A source's folder is the one it is named in and, for a symlinked file,
+    // the one its real file is in; video rows' videos count as sources.
     const identity = (dir) => {
       try {
         const s = statSync(dir);
@@ -1462,12 +1501,23 @@ async function pagesMain(argv) {
     };
     const thumbsId = identity(values.thumbs);
     const seen = new Map();
-    const clash = read.images.find((it) => {
-      const dir = path.dirname(it.path);
+    const held = (file) => {
+      const dir = path.dirname(file);
       if (!seen.has(dir)) seen.set(dir, identity(dir));
       return seen.get(dir) === thumbsId;
-    });
-    if (clash) usageError(`--thumbs must not be a folder that holds source images (${values.thumbs} holds ${clash.name})`);
+    };
+    let clash = null;
+    for (const file of [...read.images.map((it) => it.path), ...read.videos]) {
+      let real = null;
+      try {
+        real = realpathSync(file);
+      } catch {
+        // a missing file has no real folder beyond its own
+      }
+      clash = held(file) ? file : real !== null && held(real) ? real : null;
+      if (clash) break;
+    }
+    if (clash) usageError(`--thumbs must not be a folder that holds source images (${values.thumbs} holds ${path.basename(clash)})`);
   }
 
   // Rows that are not drawn: video rows and rows with no image, then the
@@ -1521,7 +1571,8 @@ async function pagesMain(argv) {
   ];
   const pagesText = `${count(sheet.pages, 'page')}, ${count(sheet.images, 'image')}`;
   const pdfText = count(sheet.pages, 'PDF page');
-  const checkOne = (o) => checkOutput(o.file, o.output === 'thumbs' ? { folder: true } : { isOwn: o.output === 'html' ? isOwnSheet : isOwnPdf });
+  const checkOne = (o) => checkOutput(o.file, o.output === 'thumbs' ? { folder: true }
+    : o.output === 'html' ? { isOwn: isOwnSheet, what: 'sheet' } : { isOwn: isOwnPdf, what: 'PDF' });
   for (const o of outputs) o.check = checkOne(o);
 
   if (!go) {
@@ -1585,7 +1636,7 @@ async function pagesMain(argv) {
       } else {
         const target = o.check.target;
         mkdirSync(path.dirname(target), { recursive: true });
-        const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.tmp.pdf`);
+        const tmp = reserveTemp(target, '.tmp.pdf');
         try {
           renderPagesPdf({ title, plan, paper, tiles, pdfPath: tmp, generatedAt, docTitle: path.basename(target, path.extname(target)) });
           keepMode(tmp, target);
@@ -1730,9 +1781,15 @@ function nextAction(run) {
 // trace and exit 1, as in 1.2.0: whatever escapes is rethrown outside the
 // runtime's promise chain, which would otherwise turn it into one `error:`
 // line and exit 3. The promise that never settles keeps the runtime from
-// exiting 0 before the rethrow lands.
+// exiting 0 before the rethrow lands. The header documents --version and -h
+// for both modes; the grid's parser knows neither and crashed on them, so they
+// are answered here (before any `--`), and every other argv reaches gridMain().
 async function main() {
   if (process.argv[2] === 'pages') return pagesMain(process.argv.slice(3));
+  const gridArgs = process.argv.slice(2);
+  const flags = gridArgs.includes('--') ? gridArgs.slice(0, gridArgs.indexOf('--')) : gridArgs;
+  if (flags.includes('--version')) return void console.log(`${TOOL_NAME} ${readVersion()}`);
+  if (flags.includes('-h')) return void console.log(helpText());
   process.removeAllListeners('uncaughtException');
   process.removeAllListeners('unhandledRejection');
   try {
