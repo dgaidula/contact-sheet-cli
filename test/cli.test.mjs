@@ -369,9 +369,10 @@ test('itemsFromManifest: video rows never become tiles; a frame shows its group.
     JSON.stringify({ id: 'f@2.000', kind: 'frame', paths: ['clip.mov'], t: 2, group: { groupId: 'v1', keeper: true, copy: 'stills/v1.jpg' } }),
     JSON.stringify({ id: 's', kind: 'still', paths: ['/x/s.jpg'] }),
   ].join('\n');
-  const { items, skipped, ranges, frames } = itemsFromManifest(text, { baseDir: '/base' });
+  const { items, skipped, ranges, frames, skippedRows } = itemsFromManifest(text, { baseDir: '/base' });
   assert.deepEqual(items.map((it) => it.path), ['/base/stills/v1.jpg', '/x/s.jpg']);
   assert.deepEqual([skipped, ranges, frames], [2, 1, 1]);
+  assert.deepEqual(skippedRows, [{ line: 1, id: 'f@1.000', why: 'frame' }, { line: 2, id: 'f@1-3', why: 'range' }]);
   assert.ok(items.every((it) => !it.path.endsWith('.mov')));
 });
 
@@ -396,8 +397,8 @@ test('dateKey: ISO prefixes sort as written; year and month hints sit mid-period
   for (const bad of ['undated', '', '19710502', 'c. 1971', null, undefined, 1971]) assert.equal(dateKey(bad), null, String(bad));
 });
 
-test('itemsFromManifest: a line that is not JSON is a usage error naming the line', () => {
-  assert.throws(() => itemsFromManifest('{"path":"a.jpg"}\nnot json\n'), (e) => e.exitCode === 2 && /line 2/.test(e.message));
+test('itemsFromManifest: a line that is not JSON is an input error naming the line', () => {
+  assert.throws(() => itemsFromManifest('{"path":"a.jpg"}\nnot json\n'), (e) => e.line === 2 && /line 2/.test(e.message));
 });
 
 test('itemsFromList: path, then optional tab-separated label and section; comments skipped', () => {
@@ -462,6 +463,7 @@ test('planPages: keepers keeps group keepers and rows with no group block, and c
   assert.deepEqual(plan.pages[0].tiles.map((t) => `${t.num}:${t.name}`), ['001:k.jpg', '002:plain.jpg', '003:k2.jpg']);
   assert.equal(plan.count, 3);
   assert.equal(plan.dropped, 1);
+  assert.deepEqual(plan.left.map((it) => it.name), ['n.jpg']);
   assert.equal(planPages(items, { perPage: 36 }).count, 4);
 });
 
@@ -563,10 +565,12 @@ test('CLI pages: a three-section manifest gives one page per section, numbered a
   try {
     const { manifest } = threeSectionFixture(root);
     const out = path.join(root, 'sheet.html');
-    const r = runPages([manifest, '--out', out, '--title', 'Round 1']);
+    const r = runPages([manifest, '--out', out, '--title', 'Round 1', '--go', '--json']);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /6 image\(s\), 3 section\(s\), 3 page\(s\) of 6x6, 0 missing file\(s\)/);
-    assert.match(r.stderr, /skipped 1 manifest row\(s\) with no image path/);
+    const { items } = JSON.parse(r.stdout);
+    const { data } = items.find((it) => it.data?.output === 'html');
+    assert.deepEqual([data.images, data.sections, data.pages, data.tiles, data.missing], [6, 3, 3, '6x6', 0]);
+    assert.deepEqual(items.filter((it) => it.verdict === 'skip').map((it) => [it.name, it.summary]), [['line 7', 'video range row: not drawn']]);
     const sheet = pages(readFileSync(out, 'utf8'));
     assert.equal(sheet.length, 3);
     assert.match(sheet[0], /<h1>Picks<\/h1>[\s\S]*1–3 of 3/);
@@ -601,10 +605,14 @@ test('CLI pages: a shuffled near-dupe-pick manifest with --sort date --keepers s
     const manifest = path.join(root, 'manifest.jsonl');
     writeFileSync(manifest, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
     const out = path.join(root, 'sheet.html');
-    const r = runPages([manifest, '--out', out, '--sort', 'date', '--keepers']);
+    const r = runPages([manifest, '--out', out, '--sort', 'date', '--keepers', '--go', '--json']);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /4 image\(s\), 0 section\(s\), 1 page\(s\)/);
-    assert.match(r.stderr, /left out 2 row\(s\) that are not group keepers/);
+    const { items } = JSON.parse(r.stdout);
+    const { data } = items.find((it) => it.data?.output === 'html');
+    assert.deepEqual([data.images, data.sections, data.pages], [4, 0, 1]);
+    assert.deepEqual(items.filter((it) => it.verdict === 'skip').map((it) => [it.name, it.summary]), [
+      ['IMG_6.png', 'not a group keeper: left out'], ['IMG_3.png', 'not a group keeper: left out'],
+    ]);
     const html = readFileSync(out, 'utf8');
     assert.deepEqual([...html.matchAll(/alt="(IMG_\d)\.png"/g)].map((m) => m[1]), ['IMG_2', 'IMG_5', 'IMG_1', 'IMG_4']);
     assert.deepEqual([...html.matchAll(/class="num">(\d+)</g)].map((m) => m[1]), ['001', '002', '003', '004']);
@@ -624,18 +632,22 @@ test('CLI pages: video frame and range rows never render the video; a frame with
     const onlyVideo = path.join(root, 'video.jsonl');
     writeFileSync(onlyVideo, [frame, range].map((r) => JSON.stringify(r)).join('\n') + '\n');
     const out = path.join(root, 'sheet.html');
-    const r = runPages([onlyVideo, '--out', out]);
+    const r = runPages([onlyVideo, '--out', out, '--go', '--json']);
     assert.equal(r.status, 1);
-    assert.match(r.stderr, /skipped 2 manifest row\(s\) with no image path \(1 video range, 1 video frame with no group\.copy still\)/);
+    const skipped = [['f@1.000', 'video frame with no still: not drawn'], ['f@1-3', 'video range row: not drawn']];
+    assert.deepEqual(JSON.parse(r.stdout).items.map((it) => [it.verdict, it.name, it.summary]), [
+      ...skipped.map((s) => ['skip', ...s]), ['refuse', onlyVideo, 'no images found'], ['skip', out, 'not written'],
+    ]);
     assert.equal(existsSync(out), false);
 
     const withStill = path.join(root, 'stills.jsonl');
     const copied = { ...frame, id: 'f@2.000', group: { groupId: 'v1', keeper: true, copy: 'still.png' } };
     writeFileSync(withStill, [frame, range, copied].map((r) => JSON.stringify(r)).join('\n') + '\n');
-    const r2 = runPages([withStill, '--out', out]);
+    const r2 = runPages([withStill, '--out', out, '--go', '--json']);
     assert.equal(r2.status, 0, r2.stderr);
-    assert.match(r2.stdout, /1 image\(s\)/);
-    assert.match(r2.stderr, /skipped 2 manifest row\(s\) with no image path \(1 video range, 1 video frame/);
+    const items = JSON.parse(r2.stdout).items;
+    assert.equal(items.find((it) => it.data?.output === 'html').data.images, 1);
+    assert.deepEqual(items.filter((it) => it.verdict === 'skip').map((it) => [it.name, it.summary]), skipped);
     const html = readFileSync(out, 'utf8');
     assert.match(html, /<img src="still\.png"/);
     assert.doesNotMatch(html, /clip\.mov/);
@@ -651,7 +663,7 @@ test('CLI pages: --tiles sets the page size; a section breaks into pages of N ti
     mkdirSync(dir);
     for (let i = 1; i <= 9; i++) writePng(path.join(dir, `s${i}.png`));
     const out = path.join(root, 'sheet.html');
-    const r = runPages([dir, '--tiles', '2x2', '--out', out]);
+    const r = runPages([dir, '--tiles', '2x2', '--out', out, '--go']);
     assert.equal(r.status, 0, r.stderr);
     const sheet = pages(readFileSync(out, 'utf8'));
     assert.deepEqual(sheet.map((pg) => (pg.match(/<figure class="tile">/g) || []).length), [4, 4, 1]);
@@ -672,7 +684,7 @@ test('CLI pages: a directory is read flat, in natural filename order, titled by 
     mkdirSync(path.join(dir, 'nested'));
     writePng(path.join(dir, 'nested', 'IMG_0.png'));
     const out = path.join(root, 'sheet.html');
-    const r = runPages([dir, '--out', out]);
+    const r = runPages([dir, '--out', out, '--go']);
     assert.equal(r.status, 0, r.stderr);
     const html = readFileSync(out, 'utf8');
     assert.match(html, /<title>commencement<\/title>/);
@@ -695,7 +707,7 @@ test('CLI pages: a list file with label and section columns; paths resolve from 
     const list = path.join(root, 'job', 'round2.txt');
     writeFileSync(list, '# round 2\nimgs/a b.png\tWedding, 1984\tPicks\nimgs/c.png\t\tMaybe\nimgs/d.png\tlate addition\tPicks\n');
     const out = path.join(root, 'reports', 'nested', 'sheet.html');
-    const r = runPages([list, '--out', out]);
+    const r = runPages([list, '--out', out, '--go']);
     assert.equal(r.status, 0, r.stderr);
     const html = readFileSync(out, 'utf8');
     assert.match(html, /<title>round2<\/title>/);
@@ -718,10 +730,13 @@ test('CLI pages: a missing image keeps its number, shows as missing, and exits 1
     const list = path.join(root, 'list.txt');
     writeFileSync(list, 'here.png\ngone.png\n');
     const out = path.join(root, 'sheet.html');
-    const r = runPages([list, '--out', out]);
+    const r = runPages([list, '--out', out, '--go', '--json']);
     assert.equal(r.status, 1);
-    assert.match(r.stderr, /missing: 002 .*gone\.png/);
-    assert.match(r.stdout, /1 missing file\(s\)/);
+    const { items } = JSON.parse(r.stdout);
+    const warned = items.filter((it) => it.verdict === 'warn');
+    assert.deepEqual(warned.map((it) => [it.name, it.summary, it.data.num]), [['gone.png', 'tile 002 missing: placeholder', '002']]);
+    assert.match(warned[0].reason, /no file at .*gone\.png/);
+    assert.equal(items.find((it) => it.data?.output === 'html').data.missing, 1);
     assert.match(readFileSync(out, 'utf8'), /<p class="note">missing<br>gone\.png<\/p><\/div><figcaption><span class="num">002</);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -734,7 +749,7 @@ test('CLI pages: usage errors exit 2 and write nothing', () => {
     writePng(path.join(root, 'a.png'));
     const out = path.join(root, 'sheet.html');
     for (const args of [[root, '--tiles', '6by6'], [root, '--page', 'postcard'], [], [root, root], [root, '--bogus'], [path.join(root, 'nope')]]) {
-      const r = runPages([...args, '--out', out]);
+      const r = runPages([...args, '--out', out, '--go']);
       assert.equal(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
       assert.equal(r.stdout, '');
     }
@@ -751,7 +766,7 @@ test('CLI pages: --pdf without ImageMagick on PATH exits 3 with a clear message 
     const emptyBin = path.join(root, 'empty-bin');
     mkdirSync(emptyBin);
     const out = path.join(root, 'sheet.html');
-    const r = runPages([manifest, '--out', out, '--pdf', path.join(root, 'sheet.pdf')], { env: { ...process.env, PATH: emptyBin } });
+    const r = runPages([manifest, '--out', out, '--pdf', path.join(root, 'sheet.pdf'), '--go'], { env: { ...process.env, PATH: emptyBin } });
     assert.equal(r.status, 3, r.stderr);
     assert.match(r.stderr, /--pdf needs ImageMagick 7 \(the "magick" command\) on PATH/);
     assert.match(r.stderr, /print the HTML to PDF from a browser/);
@@ -768,9 +783,10 @@ test('CLI pages: --pdf with ImageMagick writes one PDF page per sheet page; sour
     const { photos, manifest } = threeSectionFixture(root);
     const before = readdirSync(photos).map((f) => sha(path.join(photos, f)));
     const pdf = path.join(root, 'out', 'sheet.pdf');
-    const r = runPages([manifest, '--out', path.join(root, 'sheet.html'), '--pdf', pdf, '--title', '100% @home']);
+    const r = runPages([manifest, '--out', path.join(root, 'sheet.html'), '--pdf', pdf, '--title', '100% @home', '--go', '--json']);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /wrote .*sheet\.pdf/);
+    const item = JSON.parse(r.stdout).items.find((it) => it.data?.output === 'pdf');
+    assert.deepEqual([item.path, item.summary, item.changed], [pdf, 'wrote 3 PDF pages', true]);
     const bytes = readFileSync(pdf);
     assert.equal(bytes.subarray(0, 5).toString('latin1'), '%PDF-');
     assert.equal((bytes.toString('latin1').match(/\/Type\s*\/Page(?!s)/g) || []).length, 3);
@@ -787,16 +803,17 @@ test('CLI pages: --thumbs writes downscaled copies and shows them; the full imag
     const before = readdirSync(photos).map((f) => sha(path.join(photos, f)));
     const out = path.join(root, 'review', 'sheet.html');
     const thumbs = path.join(root, 'review', 'thumbs');
-    const r = runPages([manifest, '--out', out, '--thumbs', thumbs]);
+    const thumbsData = (run) => JSON.parse(run.stdout).items.find((it) => it.data?.output === 'thumbs').data;
+    const r = runPages([manifest, '--out', out, '--thumbs', thumbs, '--go', '--json']);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /thumbnails: 6 made, 0 reused/);
+    assert.deepEqual([thumbsData(r).made, thumbsData(r).reused], [6, 0]);
     assert.equal(readdirSync(thumbs).filter((f) => f.endsWith('.jpg')).length, 6);
     const html = readFileSync(out, 'utf8');
     assert.match(html, /<img src="thumbs\/IMG_1-[0-9a-f]{8}\.jpg" data-full="\.\.\/photos\/IMG_1\.png"/);
     assert.deepEqual(readdirSync(photos).map((f) => sha(path.join(photos, f))), before);
     assert.deepEqual(readdirSync(photos).sort(), ['IMG_1.png', 'IMG_2.png', 'IMG_3.png', 'IMG_4.png', 'IMG_5.png', 'IMG_6.png']);
-    const again = runPages([manifest, '--out', out, '--thumbs', thumbs]);
-    assert.match(again.stdout, /thumbnails: 0 made, 6 reused/);
+    const again = runPages([manifest, '--out', out, '--thumbs', thumbs, '--go', '--json']);
+    assert.deepEqual([thumbsData(again).made, thumbsData(again).reused], [0, 6]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -806,7 +823,7 @@ test('CLI pages: --thumbs refuses a folder that holds source images', () => {
   const root = tmpDir('contact-sheet-pages-');
   try {
     const { photos, manifest } = threeSectionFixture(root);
-    const r = runPages([manifest, '--out', path.join(root, 'sheet.html'), '--thumbs', photos]);
+    const r = runPages([manifest, '--out', path.join(root, 'sheet.html'), '--thumbs', photos, '--go']);
     if (!hasThumbTool) return assert.equal(r.status, 3);
     assert.equal(r.status, 2, r.stderr);
     assert.match(r.stderr, /--thumbs must not be a folder that holds source images/);

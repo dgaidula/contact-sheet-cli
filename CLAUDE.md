@@ -7,7 +7,45 @@ eyeballing an image-processing batch. One file: `contact-sheet-cli.mjs`.
 Since 1.3.0 it has a second mode, `contact-sheet-cli pages <input>`: an
 ordered list of images as numbered, fixed-size printable review pages. See
 “The `pages` mode” below; the two modes share only the small utilities
-(`escapeHtml`, `relHref`, `scanDir`) and the entry guard.
+(`escapeHtml`, `relHref`, `scanDir`) and the mjs-tool runtime fence at the
+bottom of the file, whose entry guard starts both. Only `pages` reports
+through the fence: it is on the `mjs-tool/2` contract, and the grid is not
+yet (see “The contract, for `pages` only”).
+
+## Driving `contact-sheet-cli pages` from an agent session
+
+This covers `pages` only. The grid mode prints one line of counts and
+`wrote <file>`, with its own exit codes; it has no `--brief`, `--json` or
+dry run yet.
+
+- **Reach for `--brief` first** — or `--json` when you need to parse the result — never the default human output. Brief is exactly one line per item, then a summary line and a `next:` line; JSON is a stable `{ tool, version, contract, command, effect, exit, items, summary, next }` object. The human output is for a person at a terminal and only wastes your context.
+
+- **Any line whose verdict is not `ok` is a finding**, not noise. The verdicts are `ok`, `warn`, `skip`, `refuse`, `fail`; a non-`ok` line is never collapsed or dropped, and carries a parenthesised reason. A run is clean only when the summary reads `warn=0 refuse=0 fail=0` — `skip` is not a failure, but report what was skipped and why.
+
+- **Dry-run before you commit.** `contact-sheet-cli pages <input> …` (no `--go`) previews the sheet and every output; `--go` writes them. In `--json`, `effect` says which kind of run it was: `dry-run` or `applied`. This tool never prompts and has no confirmation or override flag: `--go` is the only gate, and whether to pass it after a dry run is a person’s call.
+
+- **Check the exit code, then read `next`:** `0` all ok · `1` partial (something warned, refused, or failed) · `2` usage error · `3` could not run to completion (an environment or internal error). **Exit `0` does not mean go** — a clean dry run exits `0` and still says `ask`. On exit `2` or `3` there is nothing on stdout and no `next`: report stderr and halt.
+
+- **Quote back** the final summary line plus every non-`ok` line verbatim. That is the whole result — do not paraphrase a refusal into “done”.
+
+### The babysit loop: run, read `next`, obey or halt
+
+Every run ends with one piece of advice: the `next:` line, or the `next` object in `--json`.
+
+```
+next: ask  (dry run clean: would write review/sheet.html)
+next: done  (wrote review/sheet.html; report 1 missing image: IMG_7.jpg)
+```
+
+- **`run`** — run exactly that command, then read its `next` in turn. `pages` never advises `run` today (no command is in `AUTO_RUN_COMMANDS`), but if it does: the text line reads `next: run <command>  (<why>)`, and `<command>` starts with `cd <dir> &&`; in `--json`, take the `argv` array as given and run it from `next.cwd`; never rebuild or re-quote it.
+
+- **`done`** — nothing is left for this tool to do. Report and finish. At exit `1` it means no further tool step, not success: report the findings.
+
+- **`ask`** — a person’s decision. Report the summary and the findings, then halt. Never take the step yourself; in `--json`, `argv` is what the person would review, not a command for you. (A person running the tool by hand sees the same step as `next: your call: <command>`.)
+
+- **`stop`** — something is broken beyond the tool’s remedy. Report and halt.
+
+**The runbook can only hold you back.** A runbook can halt you where `next` says `run`; nothing but a person carries you past `ask` or `stop`. `next` never carries an override flag, and it never contradicts the exit code.
 
 ## How matching works (read this before touching `buildRows`)
 
@@ -88,9 +126,12 @@ Built for review rounds over an ordered selection, where the reviewer answers
 in numbers (“drop 009 and 019”). Its inputs are the photo tools’ shared JSONL
 manifest (`photo-face-find`, `photo-date-fix`, `near-dupe-pick`; schema in
 `~/sw/github-public/photo-face-find/CONTRACT.md`), a plain list file, or a
-directory. `main()` hands off to `pagesCli()` when `argv[2] === 'pages'`;
-nothing else in the grid path changed, and its output is byte-identical to
-1.2.0.
+directory. `main()` hands off to `pagesMain()` when `argv[2] === 'pages'`,
+and otherwise to `gridMain()`, the 1.2.0 grid unchanged. Its sheets,
+stdout, error messages and exit codes have not changed: the commit that
+added `pages` and the one that put it on the contract each checked that
+against the commit before with a before/after harness. Only the grid’s
+`--help` text grew, since the shared header documents both modes.
 
 Shape, top to bottom in the file:
 1. **Readers** turn an input into items: `itemsFromManifest`,
@@ -152,17 +193,86 @@ edge; named `<stem>-<sha1 of the source path, 8 hex>.jpg`, so two
 the source; written to a temp name and renamed. `sips` keeps the EXIF
 orientation tag and browsers honour it; `magick` bakes it in. A folder that
 holds source images is refused as `--thumbs` (exit 2), so nothing is ever
-written beside a source.
+written beside a source. The folders are compared by identity (device and
+inode), since a symlink, another letter case on a case-insensitive volume,
+or `/tmp` for `/private/tmp` all passed the name comparison 1.3.0 started
+with.
 
-Exit codes for `pages` follow the mjs-tool-skeleton meanings: 0 written; 1
-written but with findings (missing files, failed thumbnails), or no images;
-2 usage, nothing written; 3 a needed tool is missing or failed. The grid mode
-keeps its historical codes (1 for most usage errors).
+## The contract, for `pages` only
 
-**Not on the skeleton contract yet.** Neither mode has `--brief`, `--json` or
-`--quiet`; that adoption is an open item, deliberately left out of 1.3.0. When
-it happens, `pages` should report one item per tile (missing, thumbnail
-failed) plus the written files, from the same plan.
+`pages` is on `mjs-tool/2` (mjs-tool-skeleton 0.2.0; the procedure followed
+is its `ADOPTING.md`). The grid mode is not, yet: a partial adoption, so a
+conformance scan’s “conformant” covers `pages` alone. The runtime fence at
+the bottom of the file is byte-identical to `skeleton/tool.mjs`, and a test
+pins its sha256: never edit it; to move to a later contract, swap the whole
+block.
+
+How `pagesMain()` is built, top to bottom:
+
+1. **Usage first** (exit 2, nothing written): flags, `--tiles`, `--page`,
+   `--sort`, one input that exists, `--out` and `--pdf` not one file. Then
+   the tools `--pdf` and `--thumbs` need (exit 3 when missing, before
+   anything is read). Then the input is read; a file that cannot be read, or
+   a manifest line that is not valid JSON or not an object, is a `fail` item,
+   not a usage error. A `--thumbs` folder that holds sources is still a usage
+   error.
+
+2. **Items, in the order of the work:** a `skip` per manifest row not drawn
+   (`itemsFromManifest`’s `skippedRows`: range, frame without a still, no
+   image path) and per row `--keepers` leaves out (`planPages`’s `left`);
+   a `warn` per tile with a missing file and, under `--go`, per failed
+   thumbnail; then one item per output, in write order (thumbnails, HTML,
+   PDF). No images at all is a `refuse` on the input, with every output a
+   `skip` “not written”.
+
+3. **`verdict(item)` is the single source of verdicts**, from facts
+   (`error`, `refused`, `missing`, `thumbFailed`, `notDrawn`, `notWritten`,
+   `upToDate`) and the item’s `kind` (`row`, `tile`, `output`, `input`). A
+   kind and facts with no rule throw, so a new finding can never pass as
+   `ok`. Item construction goes through `makeReportItem()`, which calls it.
+
+4. **The dry run is a prediction, and `--go` its own write path.** The dry
+   run checks every output location (`checkOutput()`) and predicts the
+   thumbnails (`predictThumbs()`, by `makeThumbs()`’s own reuse rule).
+   `--go` re-checks each output just before writing it, writes the HTML
+   through a temp file and a rename (`writeAtomic()`), and draws the PDF to a
+   temp name beside the target before renaming it. A refused output is left
+   alone and the others are still written; after a write fails, the rest are
+   “not attempted”. A test compares the dry run’s outputs and thumbnail
+   counts with what `--go` did.
+
+5. **Never replace what this tool did not write.** An existing `--out` is
+   replaced only when its first 4 KiB hold `SHEET_MARK` (the generator meta
+   tag `renderPagesHtml()` writes); an existing `--pdf` only when it starts
+   `%PDF-` and its last 256 KiB hold `PDF_MARK` (the Creator that
+   `renderPagesPdf()` sets with `-define pdf:Creator=…`, which ImageMagick
+   stores as UTF-16BE hex). The same call sets `pdf:Title` to the target’s
+   name, so the temp file’s name never reaches the PDF. A symlinked output is
+   followed, so the link keeps pointing where it did.
+
+6. **`nextAction()`** starts from the runtime’s `defaultNextAction()` (a
+   failure stops; an override flag in the argv keeps the default’s `ask`).
+   No images, or a refused output, is `ask` with no `argv`, because the
+   remedy is another input or path, not `--go`; a clean dry run, or one with
+   missing images, is `ask` with the dry run’s argv plus `--go`; an applied
+   run is `done`, naming what it wrote and any missing images or failed
+   thumbnails. `AUTO_RUN_COMMANDS` is empty: an unattended `--go` is Dan’s
+   call to pre-approve, and he has not.
+
+**The grid path and the fence’s crash handlers.** The fence’s entry guard
+installs `uncaughtException` and `unhandledRejection` handlers that turn any
+crash into one `error:` line and exit 3. `main()` removes both on the grid
+path and rethrows anything that escapes `gridMain()` from a `setImmediate`,
+then returns a promise that never settles, so the runtime cannot exit 0
+before the rethrow lands (a mutation that drops it turns the grid-crash test
+red). The grid therefore crashes as 1.2.0 did: Node’s stack trace, exit 1.
+When the grid adopts the contract, this goes.
+
+Exit codes for `pages`: 0 every item `ok` or `skip`; 1 a `warn`, `refuse` or
+`fail`; 2 usage, nothing written; 3 a tool `--pdf` or `--thumbs` needs is
+not on `PATH`, or an internal error. A `magick` failure while drawing the PDF
+is a `fail` item at exit 1, no longer exit 3, since the report can describe
+it. The grid mode keeps its historical codes (1 for most usage errors).
 
 ## Test strategy
 
@@ -177,10 +287,10 @@ failed) plus the written files, from the same plan.
   link, missing-cell placeholders, exit codes, and the `--help` header-only
   print.
 
-`contact-sheet-cli.mjs` only runs `main()` when invoked as the entry point
-(`import.meta.url === pathToFileURL(process.argv[1]).href` guard at the
-bottom) — this is required for the unit-test imports to not immediately
-execute the CLI and blow up on missing argv. Don't remove that guard.
+`contact-sheet-cli.mjs` only runs `main()` when invoked as the entry point:
+the guard is the last statement of the runtime fence, and it resolves
+symlinks on both sides, so an npm-linked bin still runs. That is what lets
+the unit tests import the file without running the CLI.
 
 If you add a new pure-logic branch (another matching rule, another sort
 mode), add a unit test against the exported function first — it's much
@@ -195,7 +305,27 @@ file with relative paths, a missing file, usage errors, `--pdf` with
 `magick` absent (an empty `PATH`) and present, and `--thumbs`. The `--pdf`
 test skips when `magick` isn’t on `PATH`; the `--thumbs` test when neither
 `sips` nor `magick` is. When 1.3.0 landed, 17 targeted mutations of the
-`pages` branches each turned at least one test red.
+`pages` branches each turned at least one test red. Since `pages` is a dry
+run by default, every CLI test that needs a written sheet passes `--go`, and
+the ones that read counts or findings read them from `--json` items.
+
+`test/contract.test.mjs` covers the contract, black-box like the rest: the
+fence’s sha256 against the skeleton’s; zero runtime dependencies; `--help`,
+`-h`, `--version` and a symlinked entry (whose `next.argv` names the link);
+the four modes from one item list; a dry run that writes nothing against a
+`--go` that writes exactly what it previewed (thumbnail counts included);
+obeying a dry run’s `next.argv` from `next.cwd`; each verdict as the only
+finding, with its exit code and `next`; usage errors and a missing `magick`
+with `--go` writing nothing; the overwrite guard for the HTML and the PDF;
+refused output locations (a file or a folder in the way, a dangling
+symlink, a folder that cannot be written); the `--thumbs` source-folder
+guard through a symlink and a letter-case variant; an open, silent stdin; no
+images; a failed thumbnail; a failed PDF write, through a stub `magick` on
+`PATH`; the grid’s Node-native crash; and `verdict()` throwing on an item no
+rule covers. When it landed, 15 of its 17 tests failed against the
+pre-adoption file (the two that passed guard behaviour that file already
+had: no dependencies, and the grid’s crash), and 14 targeted mutations of
+the new code each turned at least one test red.
 
 ## Release steps
 

@@ -104,11 +104,16 @@ accepted image files turn up across every directory given.
 ## Review pages
 
 ```sh
-contact-sheet-cli pages picks.jsonl --title "Slideshow, round 2"
-contact-sheet-cli pages picks.jsonl --pdf round2.pdf --thumbs thumbs/
-contact-sheet-cli pages scans/ --tiles 5x4 --page "a4 portrait"
-contact-sheet-cli pages keepers/manifest.jsonl --sort date --keepers
+contact-sheet-cli pages picks.jsonl --title "Slideshow, round 2"          # dry run: what it would write
+contact-sheet-cli pages picks.jsonl --title "Slideshow, round 2" --go     # write it
+contact-sheet-cli pages picks.jsonl --pdf round2.pdf --thumbs thumbs/ --go
+contact-sheet-cli pages scans/ --tiles 5x4 --page "a4 portrait" --go
+contact-sheet-cli pages keepers/manifest.jsonl --sort date --keepers --go
 ```
+
+`pages` is a dry run until you pass `--go`: it reads the input, plans the
+sheet, and reports what it would write, without writing anything. See
+[Dry run, then `--go`](#dry-run-then---go).
 
 Until 1.3.0 is published, the installed `contact-sheet-cli` has no `pages`
 mode: run `npm link` in this checkout, or call it as
@@ -147,14 +152,14 @@ Rows are kept in manifest order, or ordered by `seq` when every row has one.
 alone sorts at July 1, a month alone at the 15th); undated rows go last, in
 manifest order, and equal dates keep their manifest order. `--keepers` shows
 only the rows whose `group.keeper` is `true`, plus rows with no `group` at
-all, and counts the rest on stderr. Sections appear in the order of their
+all, and reports each row it leaves out. Sections appear in the order of their
 first row.
 
 Video rows hold the video in `paths`, and a video is never drawn as a tile.
 A frame row shows the still extracted from it, `group.copy` (near-dupe-pick
 `video-stills`), resolved from the manifest’s folder; without one it is
-skipped. A range row is always skipped. Skipped rows, like any row with no
-image path, are counted on stderr, with the video ones named.
+skipped. A range row is always skipped. Each skipped row, like any row with
+no image path, is reported by its `id` (or its line), with the reason.
 
 **A list file:** one path per line, optionally followed by a tab and a label,
 then a tab and a section. Blank lines and `#` comments are skipped.
@@ -188,6 +193,9 @@ neither.
 | `--sort date` | | order by date, undated last (see above); wins over `seq` |
 | `--keepers` | | only `group.keeper` rows, and rows with no `group` |
 | `--thumbs <dir>` | | make downscaled copies there and show those |
+| `--go` | | write the outputs; without it, a dry run |
+| `--brief`, `--json`, `--quiet` | | output mode (see below) |
+| `--version` | | print the version |
 
 ### The PDF
 
@@ -215,14 +223,79 @@ its source, so the second review round is quick. A TIFF, which a browser
 can’t show, gets a viewable thumbnail too.
 
 Source images are only ever read. `--thumbs` refuses a folder that holds
-source images.
+source images, however it is named: through a symlink, or in another letter
+case.
+
+### Dry run, then `--go`
+
+`pages` follows the contract of
+[mjs-tool-skeleton](https://github.com/dgaidula/mjs-tool-skeleton)
+(`mjs-tool/2`), so a person and an agent read the same report. The grid
+above is not on it yet.
+
+Without `--go`, a run is a dry run. It reads the input, plans every page,
+checks where each output would go, and reports what it would write. It
+writes nothing: no HTML, no PDF, no thumbnail folder. With `--go` it writes
+them, in this order: thumbnails, HTML, PDF.
+
+The report is one list of items, one line each in `--brief`:
+
+```
+• skip   video range row: not drawn             clip@1-3  (a range row holds video, which is never drawn as a tile)
+⚠ warn   tile 004 missing: placeholder          IMG_7.jpg  (no file at /photos/IMG_7.jpg; a placeholder takes its place on the sheet)
+✓ ok     would make 5 thumbnails, reuse 0       review/thumbs
+✓ ok     would write 3 pages, 6 images          review/sheet.html
+summary: ok=2 warn=1 skip=1 refuse=0 fail=0  (dry run: pass --go to apply)
+next: ask  (dry run: review 1 missing image before --go: IMG_7.jpg)
+```
+
+- **`skip`:** a row that is not drawn (a video row, a row with no image, a
+  non-keeper under `--keepers`), thumbnails already up to date, or an output
+  not written because there was nothing to draw.
+
+- **`warn`:** a tile whose image file is missing, drawn as a placeholder
+  that keeps its number; or, under `--go`, a tile whose thumbnail failed, so
+  the sheet shows the original.
+
+- **`refuse`:** an output that `--go` will not write, or no images to lay out.
+
+- **`fail`:** an input that cannot be read (a manifest line that is not JSON,
+  say), or a write that failed (`magick` could not draw the PDF). Outputs
+  after a failed one are not attempted.
+
+`--json` prints the same report as one object (`tool`, `version`,
+`contract`, `command`, `effect`, `exit`, `items`, `summary`, `next`); the
+HTML item’s `data` holds the plan, with each section’s first and last
+number and its pages. `--quiet` prints the summary line alone. The default
+output is a block per item, for a person at a terminal.
+
+Every report ends with a `next:` line, the tool’s advice. A clean dry run is
+a person’s call: in the default output it reads `next: your call:`, then the
+same command with `--go` added. When there is nothing to draw, or an output
+cannot be written, the advice names the problem and offers no command,
+because the fix is another input or path, not `--go`.
+
+**What `--go` will replace.** An existing `--out` or `--pdf` is replaced only
+when this tool wrote it: every sheet carries
+`<meta name="generator" content="contact-sheet-cli pages">`, and every PDF
+has `contact-sheet-cli pages` as its Creator. Anything else there is refused
+and left as it was, and the other outputs are still written. So is a folder
+or a dangling symlink in the way, or a folder that cannot be written; the
+dry run shows each one before `--go` is ever run. A sheet made by an earlier
+build of `pages` has no generator tag, so move it away once. Files are
+written to a temporary name beside the target and then renamed, so an
+interrupted run never leaves half a sheet.
+
+`--go` acts on the inputs as they are when it runs, not as they were in the
+dry run: a file that went missing in between is reported then.
 
 ### Exit codes
 
-`0` the sheet was written · `1` it was written, but some image files were
-missing or a thumbnail failed (each is named on stderr), or no images were
-found · `2` usage error, and nothing was written · `3` a tool it needs
-(`magick`, `sips`) is missing or failed.
+`0` every item is `ok` or `skip` · `1` a tile warned, an output was refused,
+or something failed: the report says which · `2` usage error, and nothing
+was written · `3` a tool that `--pdf` or `--thumbs` needs (`magick`; `sips`
+or `magick`) is not on your `PATH`, checked before anything is read or
+written. On `2` and `3` stdout is empty and the reason is on stderr.
 
 ## Works great with
 
