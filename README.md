@@ -115,9 +115,7 @@ contact-sheet-cli pages keepers/manifest.jsonl --sort date --keepers --go
 sheet, and reports what it would write, without writing anything. See
 [Dry run, then `--go`](#dry-run-then---go).
 
-Until 1.3.0 is published, the installed `contact-sheet-cli` has no `pages`
-mode: run `npm link` in this checkout, or call it as
-`node contact-sheet-cli.mjs pages …`.
+`pages` needs contact-sheet-cli 1.3.0 or later (`npm install -g contact-sheet-cli@latest`).
 
 The grid above compares the stages of one batch. `pages` is for a different
 job: a review round over an ordered selection — the picks first, then each
