@@ -127,11 +127,16 @@ in numbers (“drop 009 and 019”). Its inputs are the photo tools’ shared JS
 manifest (`photo-face-find`, `photo-date-fix`, `near-dupe-pick`; schema in
 `~/sw/github-public/photo-face-find/CONTRACT.md`), a plain list file, or a
 directory. `main()` hands off to `pagesMain()` when `argv[2] === 'pages'`,
-and otherwise to `gridMain()`, the 1.2.0 grid unchanged. Its sheets,
-stdout, error messages and exit codes have not changed: the commit that
-added `pages` and the one that put it on the contract each checked that
-against the commit before with a before/after harness. Only the grid’s
-`--help` text grew, since the shared header documents both modes.
+and otherwise to `gridMain()`, the 1.2.0 grid unchanged. Its sheets and
+stdout have not changed, and its crashes keep the same error messages and
+exit codes (the stack frames differ): the commit that added `pages`, the one
+that put it on the contract and the 1.3.0 pre-publish fix pass each checked
+that against 1.2.0 with a before/after harness. The grid’s `--help` text
+grew, since the shared header documents both modes; and `--version` and
+`-h`, which the header documents and which crashed in 1.2.0, are answered
+by `main()` (see “The grid path and the fence’s crash handlers”). `pages`
+defaults to `--out contact-pages.html`, so it never meets the grid’s
+`contact-sheet.html`.
 
 Shape, top to bottom in the file:
 1. **Readers** turn an input into items: `itemsFromManifest`,
@@ -182,21 +187,26 @@ one PDF at 150 dpi, so the PDF page is the paper size. Details that bit:
 `montage` ignores EXIF orientation without `-auto-orient`; `+size` after the
 canvas, or the page size lingers as a setting; every text argument goes
 through `imText()` (ImageMagick expands `%` escapes, backslashes and a
-leading `@`, which reads a file); the font is the macOS Arial path, because
-ImageMagick can’t resolve “Helvetica” by name, and a missing font file falls
-back to ImageMagick’s default. `--pdf` checks for `magick` before anything is
+leading `@`, which reads a file), and every file name, read or written,
+through `imPath()` (`%` escapes expand in file names too: `a%d.png` reads
+`a0.png`); an SVG tile is never handed to ImageMagick, which follows an
+SVG’s own `<image>` references, so it is drawn as a placeholder note; the
+font is the macOS Arial path, because ImageMagick can’t resolve “Helvetica”
+by name, and a missing font file falls back to ImageMagick’s default. `--pdf` checks for `magick` before anything is
 written, and exits 3 with the remedy when it isn’t there.
 
 Thumbnails (`--thumbs <dir>`). `sips` on macOS, else `magick`; 640 px long
 edge; named `<stem>-<sha1 of the source path, 8 hex>.jpg`, so two
 `IMG_0001.JPG` from different folders never collide; reused while newer than
-the source; written to a temp name and renamed. `sips` keeps the EXIF
-orientation tag and browsers honour it; `magick` bakes it in. A folder that
+the source; written to a temp name (`reserveTemp()`) and renamed. `sips`
+keeps the EXIF orientation tag and browsers honour it; `magick` bakes it in. A folder that
 holds source images is refused as `--thumbs` (exit 2), so nothing is ever
 written beside a source. The folders are compared by identity (device and
 inode), since a symlink, another letter case on a case-insensitive volume,
 or `/tmp` for `/private/tmp` all passed the name comparison 1.3.0 started
-with.
+with. A source’s folders are the one it is named in and the one its
+realpath is in, and video rows’ `paths[0]` count as sources
+(`itemsFromManifest()`’s `videos`).
 
 ## The contract, for `pages` only
 
@@ -210,9 +220,9 @@ block.
 How `pagesMain()` is built, top to bottom:
 
 1. **Usage first** (exit 2, nothing written): flags, `--tiles`, `--page`,
-   `--sort`, one input that exists, `--out` and `--pdf` not one file. Then
-   the tools `--pdf` and `--thumbs` need (exit 3 when missing, before
-   anything is read). Then the input is read; a file that cannot be read, or
+   `--sort`, one input that exists, no two of `--out`, `--pdf` and
+   `--thumbs` naming one path. Then the tools `--pdf` and `--thumbs` need
+   (exit 3 when missing, before anything is read). Then the input is read; a file that cannot be read, or
    a manifest line that is not valid JSON or not an object, is a `fail` item,
    not a usage error. A `--thumbs` folder that holds sources is still a usage
    error.
@@ -236,8 +246,11 @@ How `pagesMain()` is built, top to bottom:
    thumbnails (`predictThumbs()`, by `makeThumbs()`’s own reuse rule).
    `--go` re-checks each output just before writing it, writes the HTML
    through a temp file and a rename (`writeAtomic()`), and draws the PDF to a
-   temp name beside the target before renaming it. A refused output is left
-   alone and the others are still written; after a write fails, the rest are
+   temp name beside the target before renaming it. Every temp file (HTML,
+   PDF, thumbnail) comes from `reserveTemp()`: a random name, created empty
+   with `wx` before anything writes to it, so it was never there before and
+   is never a symlink; a failed create leaves nothing to remove. A refused
+   output is left alone and the others are still written; after a write fails, the rest are
    “not attempted”. A test compares the dry run’s outputs and thumbnail
    counts with what `--go` did.
 
@@ -265,8 +278,12 @@ crash into one `error:` line and exit 3. `main()` removes both on the grid
 path and rethrows anything that escapes `gridMain()` from a `setImmediate`,
 then returns a promise that never settles, so the runtime cannot exit 0
 before the rethrow lands (a mutation that drops it turns the grid-crash test
-red). The grid therefore crashes as 1.2.0 did: Node’s stack trace, exit 1.
-When the grid adopts the contract, this goes.
+red). The grid therefore crashes as 1.2.0 did: Node’s stack trace, exit 1,
+with the same error message (the stack frames differ). Before that,
+`main()` answers `--version` and `-h` itself when either comes before any
+`--`: the grid’s parser knows neither, so those were crashes, and every
+other argv reaches `gridMain()` untouched. When the grid adopts the
+contract, this goes.
 
 Exit codes for `pages`: 0 every item `ok` or `skip`; 1 a `warn`, `refuse` or
 `fail`; 2 usage, nothing written; 3 a tool `--pdf` or `--thumbs` needs is
@@ -322,7 +339,14 @@ symlink, a folder that cannot be written); the `--thumbs` source-folder
 guard through a symlink and a letter-case variant; an open, silent stdin; no
 images; a failed thumbnail; a failed PDF write, through a stub `magick` on
 `PATH`; the grid’s Node-native crash; and `verdict()` throwing on an item no
-rule covers. When it landed, 15 of its 17 tests failed against the
+rule covers. The 1.3.0 pre-publish fix pass added tests for `%` in file
+names (tile colours read back from the PDF), SVG tiles in the PDF, a
+byte-order mark, the `pages` default output beside a grid sheet, the
+grid’s `--version` and `-h`, `--thumbs` against `--out`/`--pdf`, a
+symlinked source and a video folder, random reserved temp names (a stub
+`magick` that logs its argv), and the escaping, re-check, rename and mode
+behaviour that surviving mutants showed untested; 64 targeted mutations
+then each turned at least one test red. When it landed, 15 of its 17 tests failed against the
 pre-adoption file (the two that passed guard behaviour that file already
 had: no dependencies, and the grid’s crash), and 14 targeted mutations of
 the new code each turned at least one test red.

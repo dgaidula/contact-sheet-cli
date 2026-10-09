@@ -68,7 +68,10 @@ silently collapsing the grid.
 | `--out <file>` | `contact-sheet.html` | output HTML path (parent dirs are created as needed) |
 | `--title "<text>"` | auto (column labels) | page `<h1>` / `<title>` |
 | `--sort name\|mtime` | `name` | row order: alphabetical, or by each row's earliest matched file's mtime |
-| `--help` | | print usage |
+| `--link <template>` | | make each row label a link: `{stem}` in the template becomes the row’s stem (URL-encoded); a relative template resolves from the sheet’s own location |
+| `--exclude <text>` | | leave out every file whose name contains the text; repeat it for more than one |
+| `--help`, `-h` | | print usage |
+| `--version` | | print the version |
 
 ## What it accepts
 
@@ -113,7 +116,9 @@ contact-sheet-cli pages keepers/manifest.jsonl --sort date --keepers --go
 
 `pages` is a dry run until you pass `--go`: it reads the input, plans the
 sheet, and reports what it would write, without writing anything. See
-[Dry run, then `--go`](#dry-run-then---go).
+[Dry run, then `--go`](#dry-run-then---go). It writes `contact-pages.html`
+unless `--out` names another file, so it never lands on the grid’s
+`contact-sheet.html` in the same folder.
 
 `pages` needs contact-sheet-cli 1.3.0 or later (`npm install -g contact-sheet-cli@latest`).
 
@@ -134,11 +139,19 @@ is passed to the grid as `./pages` or `pages/`.)
 One input, of three kinds. Paths in a manifest or a list resolve from that
 file’s own folder.
 
-**A manifest:** JSONL, one JSON object per line.
+**A manifest:** JSONL, one JSON object per line. Every field is optional,
+and fields not listed here are ignored.
+
+```
+{"id":"a1","paths":["scans/IMG_0412.JPG"],"seq":"009","date":{"iso":"2004-05-28T10:00:00","label":"2004-05-28","estimated":false},"category":"Picks","group":{"keeper":true}}
+```
 
 | tile shows | read from |
 |---|---|
 | the image | `paths[0]`, else `path`; for a video frame row, its still (`group.copy`) |
+| whether it is drawn | `kind`: a `range` row (a stretch of video) never is; a `frame` row (a moment of video) shows its still or is skipped; any other row shows its image |
+| whether `--keepers` keeps it | `group.keeper` is `true`, or the row has no `group` |
+| its name in the report, when skipped | `id`, else its line number |
 | its number | `seq`, when every row has one and `--sort date` isn’t given; otherwise its place in the sheet |
 | its date | `dateLabel`, else `date.label`, else the day of `date.iso` |
 | “≈” after the date | `date.estimated` is `true`, or `dateSrc` starts with `file`, `estimated`, `undated` or `archival` |
@@ -154,9 +167,9 @@ all, and reports each row it leaves out. Sections appear in the order of their
 first row.
 
 Video rows hold the video in `paths`, and a video is never drawn as a tile.
-A frame row shows the still extracted from it, `group.copy` (near-dupe-pick
-`video-stills`), resolved from the manifest’s folder; without one it is
-skipped. A range row is always skipped. Each skipped row, like any row with
+A frame row shows the still extracted from it, `group.copy` (an image file
+written by whatever made the manifest), resolved from the manifest’s folder;
+without one it is skipped. A range row is always skipped. Each skipped row, like any row with
 no image path, is reported by its `id` (or its line), with the reason.
 
 **A list file:** one path per line, optionally followed by a tab and a label,
@@ -182,7 +195,7 @@ neither.
 
 | flag | default | meaning |
 |---|---|---|
-| `--out <file>` | `contact-sheet.html` | HTML to write |
+| `--out <file>` | `contact-pages.html` | HTML to write |
 | `--pdf <file>` | | also write a PDF (needs ImageMagick) |
 | `--tiles <CxR>` | `6x6` | columns × rows per page, 1 to 20 each |
 | `--page "<size>"` | `letter landscape` | `letter`, `legal`, `tabloid`, `a4` or `a3`, then `portrait` or `landscape` |
@@ -208,7 +221,12 @@ its print dialog. On screen the pages scale to the window, in light or dark.
 on your `PATH` the run stops before writing anything and says so. On macOS
 the labels are set in Arial from `/System/Library/Fonts/Supplemental/` —
 ImageMagick can’t find Helvetica by name — and elsewhere in ImageMagick’s
-default font.
+default font. File names are passed to ImageMagick literally, `%` and all.
+
+An SVG tile is a placeholder in the PDF that reads “SVG — not drawn in
+PDF”: ImageMagick would follow an SVG’s own references to other files, and
+could draw an image that is in no manifest into the PDF. The HTML shows SVGs
+as usual.
 
 ### Thumbnails
 
@@ -222,7 +240,9 @@ can’t show, gets a viewable thumbnail too.
 
 Source images are only ever read. `--thumbs` refuses a folder that holds
 source images, however it is named: through a symlink, or in another letter
-case.
+case. That includes the folder of a symlinked source’s real file, and the
+folder of a video row’s video. It also refuses a `--thumbs` that names the
+same path as `--out` or `--pdf`.
 
 ### Dry run, then `--go`
 
@@ -274,15 +294,16 @@ cannot be written, the advice names the problem and offers no command,
 because the fix is another input or path, not `--go`.
 
 **What `--go` will replace.** An existing `--out` or `--pdf` is replaced only
-when this tool wrote it: every sheet carries
+when `pages` wrote it: every sheet carries
 `<meta name="generator" content="contact-sheet-cli pages">`, and every PDF
 has `contact-sheet-cli pages` as its Creator. Anything else there is refused
 and left as it was, and the other outputs are still written. So is a folder
 or a dangling symlink in the way, or a folder that cannot be written; the
 dry run shows each one before `--go` is ever run. A sheet made by an earlier
-build of `pages` has no generator tag, so move it away once. Files are
-written to a temporary name beside the target and then renamed, so an
-interrupted run never leaves half a sheet.
+build of `pages` has no generator tag, so move it away once; a grid sheet
+is not a `pages` sheet either. Files are written to a new temporary file
+beside the target, with a random name, and then renamed, so an interrupted
+run never leaves half a sheet.
 
 `--go` acts on the inputs as they are when it runs, not as they were in the
 dry run: a file that went missing in between is reported then.
