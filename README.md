@@ -72,6 +72,7 @@ silently collapsing the grid.
 | `--exclude <text>` | | leave out every file whose name contains the text; repeat it for more than one |
 | `--help`, `-h` | | print usage |
 | `--version` | | print the version |
+| `--cheat` | | print a short card of common invocations in tldr page format and exit |
 
 ## What it accepts
 

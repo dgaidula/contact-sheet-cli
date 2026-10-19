@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`--cheat`:** prints a short card of common invocations in tldr page
+  format and exits 0, printing nothing else. Top level only; it cannot be
+  combined with `--brief`, `--json` or `--quiet`.
+
 ## 1.3.0 (2026-10-09)
 
 ### Added

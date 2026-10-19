@@ -91,6 +91,10 @@
 //   --brief, --json, --quiet   output mode (below)
 //   --help, -h        print this header
 //   --version         print "contact-sheet-cli <version>"
+//   --cheat           print a short card of common invocations in tldr page format
+//                     and exit 0, printing nothing else; top level, so
+//                     "contact-sheet-cli --cheat". It cannot be combined with
+//                     --brief, --json or --quiet.
 //
 // Paths in a manifest or list resolve from that file's own folder.
 //
@@ -1774,6 +1778,28 @@ function nextAction(run) {
   return nextStep('done', warned.length ? `${done}; report ${what}: ${listNames(warned)}` : done);
 }
 
+const CHEAT = `# contact-sheet-cli
+
+> Build a self-contained HTML contact sheet from folders of images, one column per folder and one row per filename.
+> Its \`pages\` mode lays out numbered, printable review pages.
+> More information: contact-sheet-cli --help.
+
+- Compare two folders side by side in contact-sheet.html:
+
+\`contact-sheet-cli {{path/to/original}} {{path/to/processed}}\`
+
+- Label the columns and choose the output file:
+
+\`contact-sheet-cli "Original={{path/to/original}}" "Optimized={{path/to/optimized}}" --out {{path/to/contact-sheet.html}}\`
+
+- Simulate numbered review pages from a manifest:
+
+\`contact-sheet-cli pages {{path/to/manifest.jsonl}} --title {{title}}\`
+
+- Write the review pages and a PDF:
+
+\`contact-sheet-cli pages {{path/to/manifest.jsonl}} --title {{title}} --pdf {{path/to/review.pdf}} --go\``;
+
 // ---- CLI ------------------------------------------------------------------
 //
 // `pages` is on the contract. The grid is not yet, so on its path the
@@ -1784,12 +1810,19 @@ function nextAction(run) {
 // exiting 0 before the rethrow lands. The header documents --version and -h
 // for both modes; the grid's parser knows neither and crashed on them, so they
 // are answered here (before any `--`), and every other argv reaches gridMain().
+// --cheat is answered the same way, after them, and only at the top level.
 async function main() {
   if (process.argv[2] === 'pages') return pagesMain(process.argv.slice(3));
   const gridArgs = process.argv.slice(2);
   const flags = gridArgs.includes('--') ? gridArgs.slice(0, gridArgs.indexOf('--')) : gridArgs;
   if (flags.includes('--version')) return void console.log(`${TOOL_NAME} ${readVersion()}`);
   if (flags.includes('-h')) return void console.log(helpText());
+  if (flags.includes('--cheat')) {
+    for (const mode of ['brief', 'json', 'quiet']) {
+      if (flags.includes(`--${mode}`)) usageError(`--cheat and --${mode} cannot be combined`);
+    }
+    return void console.log(CHEAT);
+  }
   process.removeAllListeners('uncaughtException');
   process.removeAllListeners('unhandledRejection');
   try {
