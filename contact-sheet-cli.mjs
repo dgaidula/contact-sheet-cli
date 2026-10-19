@@ -1810,13 +1810,14 @@ const CHEAT = `# contact-sheet-cli
 // exiting 0 before the rethrow lands. The header documents --version and -h
 // for both modes; the grid's parser knows neither and crashed on them, so they
 // are answered here (before any `--`), and every other argv reaches gridMain().
-// --cheat is answered the same way, after them, and only at the top level.
+// --cheat is answered the same way, after them, and only at the top level;
+// --help is answered with -h, so it wins over --cheat in either order.
 async function main() {
   if (process.argv[2] === 'pages') return pagesMain(process.argv.slice(3));
   const gridArgs = process.argv.slice(2);
   const flags = gridArgs.includes('--') ? gridArgs.slice(0, gridArgs.indexOf('--')) : gridArgs;
   if (flags.includes('--version')) return void console.log(`${TOOL_NAME} ${readVersion()}`);
-  if (flags.includes('-h')) return void console.log(helpText());
+  if (flags.includes('-h') || flags.includes('--help')) return void console.log(helpText());
   if (flags.includes('--cheat')) {
     for (const mode of ['brief', 'json', 'quiet']) {
       if (flags.includes(`--${mode}`)) usageError(`--cheat and --${mode} cannot be combined`);

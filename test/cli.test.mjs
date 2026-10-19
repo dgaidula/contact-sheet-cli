@@ -1048,3 +1048,13 @@ test('--cheat refuses --brief, --json and --quiet as a usage error (exit 2, stdo
     assert.match(r.stderr, new RegExp(`--cheat and ${mode} cannot be combined`), mode);
   }
 });
+
+test('--help wins over --cheat in either order, as -h does', () => {
+  const help = cheat(['--help']);
+  assert.equal(help.status, 0);
+  for (const args of [['--help', '--cheat'], ['--cheat', '--help'], ['-h', '--cheat']]) {
+    const r = cheat(args);
+    assert.equal(r.status, 0, args.join(' '));
+    assert.equal(r.stdout, help.stdout, args.join(' '));
+  }
+});

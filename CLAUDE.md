@@ -280,9 +280,11 @@ then returns a promise that never settles, so the runtime cannot exit 0
 before the rethrow lands (a mutation that drops it turns the grid-crash test
 red). The grid therefore crashes as 1.2.0 did: Node’s stack trace, exit 1,
 with the same error message (the stack frames differ). Before that,
-`main()` answers `--version` and `-h` itself when either comes before any
-`--`: the grid’s parser knows neither, so those were crashes, and every
-other argv reaches `gridMain()` untouched. When the grid adopts the
+`main()` answers `--version`, `-h` and `--help` itself, then `--cheat`,
+when one comes before any `--`: the grid’s parser knows neither `--version`
+nor `-h`, so those were crashes, `--help` is answered with `-h` so that it
+wins over `--cheat` in either order, and every other argv reaches
+`gridMain()` untouched. When the grid adopts the
 contract, this goes.
 
 Exit codes for `pages`: 0 every item `ok` or `skip`; 1 a `warn`, `refuse` or
