@@ -1,4 +1,4 @@
-// The mjs-tool/2 contract for `pages`: the runtime fence byte-identical to the
+// The mjs-tool/3 contract for `pages`: the runtime fence byte-identical to the
 // skeleton's, four output modes from one item list, the dry-run gate, each
 // verdict on its own, exit codes 0/1/2/3, next, no prompt without a TTY, the
 // overwrite guard, --help, --version and a symlinked entry; and the grid mode
@@ -15,9 +15,9 @@ import { fileURLToPath } from 'node:url';
 const TOOL_URL = new URL('../contact-sheet-cli.mjs', import.meta.url);
 const TOOL = fileURLToPath(TOOL_URL);
 const REPO = path.dirname(TOOL);
-// sha256 of the runtime v2 fence in mjs-tool-skeleton 0.2.0 (skeleton/tool.mjs)
-const FENCE_SHA256 = '6a9adf060d5c2752be29efef343cba94ef2062ddc34752a0366eb3d2e28590ef';
-const MARK = '// ---- mjs-tool runtime v2 (do not edit; replace wholesale) ----';
+// sha256 of the runtime v3 fence in mjs-tool-skeleton 0.4.0 (skeleton/tool.mjs)
+const FENCE_SHA256 = '1f1c5c19df209089efd5e19a5b6a98535be2dfb5b97f7013410567cec133fa4a';
+const MARK = '// ---- mjs-tool runtime v3 (do not edit; replace wholesale) ----';
 const fenceOf = (text) => text.slice(text.indexOf(MARK));
 const sha = (buf) => createHash('sha256').update(buf).digest('hex');
 const VERSION = JSON.parse(readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
@@ -62,7 +62,7 @@ const outputs = (r) => r.json.items.filter((it) => it.data?.output);
 
 test('the runtime fence is byte-identical to the skeleton’s, and ends the file', () => {
   const fence = fenceOf(readFileSync(TOOL, 'utf8'));
-  assert.ok(fence.trimEnd().endsWith('// ---- end mjs-tool runtime v2 ----'), 'the fence ends the file');
+  assert.ok(fence.trimEnd().endsWith('// ---- end mjs-tool runtime v3 ----'), 'the fence ends the file');
   assert.equal(sha(fence), FENCE_SHA256);
   const skeleton = path.join(REPO, '..', 'mjs-tool-skeleton', 'skeleton', 'tool.mjs');
   if (existsSync(skeleton)) assert.equal(fence, fenceOf(readFileSync(skeleton, 'utf8')));
@@ -101,7 +101,7 @@ test('every mode renders the same items: --json, --brief, --quiet and human', (t
   const { json: o, status } = pages([...args, '--json']);
   assert.equal(status, 1);
   assert.deepEqual(Object.keys(o), ['tool', 'version', 'contract', 'command', 'effect', 'exit', 'items', 'summary', 'next']);
-  assert.deepEqual([o.tool, o.version, o.contract, o.command, o.effect, o.exit], ['contact-sheet-cli', VERSION, 'mjs-tool/2', 'pages', 'dry-run', 1]);
+  assert.deepEqual([o.tool, o.version, o.contract, o.command, o.effect, o.exit], ['contact-sheet-cli', VERSION, 'mjs-tool/3', 'pages', 'dry-run', 1]);
   for (const it of o.items) assert.deepEqual(Object.keys(it), ['path', 'name', 'verdict', 'summary', 'reason', 'changed', 'data']);
   assert.deepEqual(o.items.map((it) => [it.verdict, it.name]), [['skip', 'v@1-2'], ['warn', 'gone1.png'], ['ok', j.out]]);
   assert.deepEqual(o.summary, { ok: 1, warn: 1, skip: 1, refuse: 0, fail: 0 });
@@ -109,7 +109,7 @@ test('every mode renders the same items: --json, --brief, --quiet and human', (t
   const brief = pages([...args, '--brief']).stdout.trimEnd().split('\n');
   assert.equal(brief.length, o.items.length + 2, 'one line per item, then summary and next');
   o.items.forEach((it, k) => {
-    assert.ok(brief[k].includes(it.summary) && brief[k].includes(it.name), brief[k]);
+    assert.ok(brief[k].startsWith(`${it.verdict} ${it.summary}  ${it.name}`), brief[k]); // no glyph, no padding
     if (it.verdict !== 'ok') assert.ok(brief[k].endsWith(`  (${it.reason})`), brief[k]);
   });
   assert.equal(brief.at(-2), 'summary: ok=1 warn=1 skip=1 refuse=0 fail=0  (dry run: pass --go to apply)');

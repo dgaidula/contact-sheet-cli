@@ -249,7 +249,7 @@ same path as `--out` or `--pdf`.
 
 `pages` follows the contract of
 [mjs-tool-skeleton](https://github.com/dgaidula/mjs-tool-skeleton)
-(`mjs-tool/2`), so a person and an agent read the same report. The grid
+(`mjs-tool/3`), so a person and an agent read the same report. The grid
 above is not on it yet.
 
 Without `--go`, a run is a dry run. It reads the input, plans every page,
@@ -260,10 +260,10 @@ them, in this order: thumbnails, HTML, PDF.
 The report is one list of items, one line each in `--brief`:
 
 ```
-• skip   video range row: not drawn             clip@1-3  (a range row holds video, which is never drawn as a tile)
-⚠ warn   tile 004 missing: placeholder          IMG_7.jpg  (no file at /photos/IMG_7.jpg; a placeholder takes its place on the sheet)
-✓ ok     would make 5 thumbnails, reuse 0       review/thumbs
-✓ ok     would write 3 pages, 6 images          review/sheet.html
+skip video range row: not drawn  clip@1-3  (a range row holds video, which is never drawn as a tile)
+warn tile 004 missing: placeholder  IMG_7.jpg  (no file at /photos/IMG_7.jpg; a placeholder takes its place on the sheet)
+ok would make 5 thumbnails, reuse 0  review/thumbs
+ok would write 3 pages, 6 images  review/sheet.html
 summary: ok=2 warn=1 skip=1 refuse=0 fail=0  (dry run: pass --go to apply)
 next: ask  (dry run: review 1 missing image before --go: IMG_7.jpg)
 ```

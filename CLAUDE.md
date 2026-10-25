@@ -9,7 +9,7 @@ ordered list of images as numbered, fixed-size printable review pages. See
 “The `pages` mode” below; the two modes share only the small utilities
 (`escapeHtml`, `relHref`, `scanDir`) and the mjs-tool runtime fence at the
 bottom of the file, whose entry guard starts both. Only `pages` reports
-through the fence: it is on the `mjs-tool/2` contract, and the grid is not
+through the fence: it is on the `mjs-tool/3` contract, and the grid is not
 yet (see “The contract, for `pages` only”).
 
 ## Driving `contact-sheet-cli pages` from an agent session
@@ -18,7 +18,7 @@ This covers `pages` only. The grid mode prints one line of counts and
 `wrote <file>`, with its own exit codes; it has no `--brief`, `--json` or
 dry run yet.
 
-- **Reach for `--brief` first** — or `--json` when you need to parse the result — never the default human output. Brief is exactly one line per item, then a summary line and a `next:` line; JSON is a stable `{ tool, version, contract, command, effect, exit, items, summary, next }` object. The human output is for a person at a terminal and only wastes your context.
+- **Reach for `--brief` first** — or `--json` when you need to parse the result — never the default human output. Brief is exactly one line per item (`<verdict> <summary>  <name>`, with a long reason cut at 160 characters; it is never longer than the human output), then a summary line and a `next:` line; JSON is a stable `{ tool, version, contract, command, effect, exit, items, summary, next }` object. The human output is for a person at a terminal and only wastes your context.
 
 - **Any line whose verdict is not `ok` is a finding**, not noise. The verdicts are `ok`, `warn`, `skip`, `refuse`, `fail`; a non-`ok` line is never collapsed or dropped, and carries a parenthesised reason. A run is clean only when the summary reads `warn=0 refuse=0 fail=0` — `skip` is not a failure, but report what was skipped and why.
 
@@ -26,7 +26,7 @@ dry run yet.
 
 - **Check the exit code, then read `next`:** `0` all ok · `1` partial (something warned, refused, or failed) · `2` usage error · `3` could not run to completion (an environment or internal error). **Exit `0` does not mean go** — a clean dry run exits `0` and still says `ask`. On exit `2` or `3` there is nothing on stdout and no `next`: report stderr and halt.
 
-- **Quote back** the final summary line plus every non-`ok` line verbatim. That is the whole result — do not paraphrase a refusal into “done”.
+- **Quote back** the final summary line plus every non-`ok` line as `--brief` printed it. That is the whole result — do not paraphrase a refusal into “done”. A reason that ends `… (+N chars; --json for all)` was cut at 160 characters: the cut form is the quote, and `--json` has the full reason when you need it.
 
 ### The babysit loop: run, read `next`, obey or halt
 
@@ -210,7 +210,7 @@ realpath is in, and video rows’ `paths[0]` count as sources
 
 ## The contract, for `pages` only
 
-`pages` is on `mjs-tool/2` (mjs-tool-skeleton 0.2.0; the procedure followed
+`pages` is on `mjs-tool/3` (mjs-tool-skeleton 0.2.0; the procedure followed
 is its `ADOPTING.md`). The grid mode is not, yet: a partial adoption, so a
 conformance scan’s “conformant” covers `pages` alone. The runtime fence at
 the bottom of the file is byte-identical to `skeleton/tool.mjs`, and a test
