@@ -12,6 +12,7 @@ import {
   parseTiles, parsePaper, isEstimated, itemsFromManifest, itemsFromList, naturalCompare,
   planPages, rangeText, renderPagesHtml, imText, imPath, thumbName, dateKey, pdfLayout,
 } from '../contact-sheet-cli.mjs';
+delete process.env.FORCE_COLOR; delete process.env.NO_COLOR;
 
 const CLI = new URL('../contact-sheet-cli.mjs', import.meta.url).pathname;
 const run = (...args) => execFileSync('node', [CLI, ...args], { encoding: 'utf8' });
@@ -261,7 +262,7 @@ test('CLI: exits non-zero and prints usage when no directories are given', () =>
 
 test('CLI: --help prints only the contiguous header comment, exits 0', () => {
   const out = run('--help');
-  assert.match(out, /^contact-sheet-cli: build a self-contained HTML contact sheet/);
+  assert.match(out, /^\ncontact-sheet-cli: build a self-contained HTML contact sheet/);
   assert.match(out, /Usage:/);
   assert.doesNotMatch(out, /^---- /m); // internal section-comment banners must not leak
 });

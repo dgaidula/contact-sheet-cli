@@ -11,12 +11,13 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+delete process.env.FORCE_COLOR; delete process.env.NO_COLOR;
 
 const TOOL_URL = new URL('../contact-sheet-cli.mjs', import.meta.url);
 const TOOL = fileURLToPath(TOOL_URL);
 const REPO = path.dirname(TOOL);
-// sha256 of the runtime v3 fence in mjs-tool-skeleton 0.4.0 (skeleton/tool.mjs)
-const FENCE_SHA256 = '1f1c5c19df209089efd5e19a5b6a98535be2dfb5b97f7013410567cec133fa4a';
+// sha256 of the runtime v3 fence in mjs-tool-skeleton 0.5.0 (skeleton/tool.mjs)
+const FENCE_SHA256 = '37931f3a1fee824688b683172c238a15af81cbc4575a97fa4574684a2492e81c';
 const MARK = '// ---- mjs-tool runtime v3 (do not edit; replace wholesale) ----';
 const fenceOf = (text) => text.slice(text.indexOf(MARK));
 const sha = (buf) => createHash('sha256').update(buf).digest('hex');
@@ -79,7 +80,7 @@ test('zero runtime dependencies: none declared, and only node: builtins imported
 test('pages --help prints the header; --version the package version; a symlinked entry runs and advises through its link', (t) => {
   const help = pages(['--help']);
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /^contact-sheet-cli: build a self-contained HTML contact sheet/);
+  assert.match(help.stdout, /^\ncontact-sheet-cli: build a self-contained HTML contact sheet/);
   assert.match(help.stdout, /pages is a DRY RUN by default/);
   assert.doesNotMatch(help.stdout, /^---- |^import /m);
   assert.equal(pages(['-h']).stdout, help.stdout);
@@ -382,7 +383,7 @@ test('the grid answers --version and -h, as the header documents, with exit 0; a
   }
   const h = grid(['-h']);
   assert.deepEqual([h.status, h.stdout, h.stderr], [0, grid(['--help']).stdout, '']);
-  assert.match(h.stdout, /^contact-sheet-cli: build a self-contained HTML contact sheet/);
+  assert.match(h.stdout, /^\ncontact-sheet-cli: build a self-contained HTML contact sheet/);
   const named = grid(['--', '--version']);
   assert.deepEqual([named.status, named.stderr], [1, 'directory not found: --version\n']);
   assert.deepEqual(readdirSync(root), []);
